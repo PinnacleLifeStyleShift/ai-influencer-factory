@@ -143,10 +143,10 @@ async function pollLeonardo(generationId, apiKey, maxAttempts = 30) {
 function higgsAspectRatio(aspectRatio) {
   const mapping = {
     "9:16": "960x1696",
-    "1:1": "1024x1024",
+    "1:1": "1536x1536",
     "16:9": "1696x960",
   };
-  return mapping[aspectRatio] || "1024x1024";
+  return mapping[aspectRatio] || "1536x1536";
 }
 
 async function generateWithHiggsfield(prompt, options = {}) {

@@ -167,4 +167,43 @@ router.post("/:id/generate-image", async (req, res) => {
   }
 });
 
+// POST /api/characters/:id/generate-video — AI video generation via Kling
+router.post("/:id/generate-video", async (req, res) => {
+  try {
+    const character = await req.prisma.character.findUnique({
+      where: { id: req.params.id },
+    });
+    if (!character) return res.status(404).json({ error: "Character not found" });
+
+    const { generateVideoFromImage, generateVideoFromText } = await import("../services/videoGeneration.js");
+    const { buildPromptFromCharacter } = await import("../services/imageGeneration.js");
+
+    const prompt = buildPromptFromCharacter(character);
+    let result;
+
+    // If character has a reference image, use image-to-video; otherwise text-to-video
+    if (character.referenceImageUrl) {
+      result = await generateVideoFromImage(character.referenceImageUrl, prompt, {
+        aspectRatio: character.aspectRatio === "9:16" ? "9:16" : "16:9",
+        duration: req.body.duration || "5",
+      });
+    } else {
+      result = await generateVideoFromText(prompt, {
+        aspectRatio: character.aspectRatio === "9:16" ? "9:16" : "16:9",
+        duration: req.body.duration || "5",
+      });
+    }
+
+    res.json({ videoUrl: result.videoUrl, taskId: result.taskId, character });
+  } catch (err) {
+    console.error("POST /characters/:id/generate-video error:", err);
+
+    if (err.message.includes("KLING")) {
+      return res.status(503).json({ error: "Video generation service is not configured" });
+    }
+
+    res.status(500).json({ error: err.message || "Failed to generate video" });
+  }
+});
+
 export default router;
