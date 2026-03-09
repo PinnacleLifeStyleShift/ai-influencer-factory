@@ -59,14 +59,12 @@ async function generateWithLeonardo(prompt, options = {}) {
 
   const body = {
     prompt,
-    modelId: "6b645e3a-d64f-4341-a6d8-7a3690fbf042", // Leonardo Phoenix (latest)
+    modelId: "6b645e3a-d64f-4341-a6d8-7a3690fbf042", // Leonardo Phoenix
     width,
     height,
     num_images: 1,
     alchemy: true,
-    photoReal: true,
-    photoRealVersion: "v2",
-    presetStyle: "PHOTOGRAPHIC",
+    presetStyle: "PHOTOGRAPHY",
   };
 
   console.log("Leonardo request:", JSON.stringify(body, null, 2));
