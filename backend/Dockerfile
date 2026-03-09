@@ -8,8 +8,6 @@ COPY . .
 # Generate Prisma client (after schema is copied)
 RUN npx prisma generate
 
-# Remove dev dependencies to slim down the image
-RUN npm prune --production
 
 EXPOSE ${PORT:-4000}
-CMD sh -c "npx prisma migrate deploy && node src/server.js"
+CMD sh -c "npx prisma db push --skip-generate && node src/server.js"
