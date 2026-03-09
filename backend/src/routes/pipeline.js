@@ -31,6 +31,52 @@ router.get("/", async (req, res) => {
   }
 });
 
+// ─── TRENDS (must be before /:id wildcard) ──────────────────────
+
+// GET /api/pipeline/trends — list all saved trends
+router.get("/trends", async (req, res) => {
+  try {
+    const where = {};
+    if (req.query.platform) where.platform = req.query.platform;
+    if (req.query.status) where.status = req.query.status;
+
+    const trends = await req.prisma.trend.findMany({
+      where,
+      orderBy: { trendScore: "desc" },
+      include: { scripts: { select: { id: true, title: true, status: true } } },
+    });
+    res.json(trends);
+  } catch (err) {
+    console.error("GET /pipeline/trends error:", err);
+    res.status(500).json({ error: "Failed to fetch trends" });
+  }
+});
+
+// GET /api/pipeline/scripts — list all scripts
+router.get("/scripts", async (req, res) => {
+  try {
+    const where = {};
+    if (req.query.status) where.status = req.query.status;
+    if (req.query.character_id) where.characterId = req.query.character_id;
+
+    const scripts = await req.prisma.script.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      include: {
+        trend: { select: { id: true, topic: true, trendScore: true } },
+        character: { select: { id: true, name: true, niche: true } },
+        pipelineItems: { select: { id: true, stage: true } },
+      },
+    });
+    res.json(scripts);
+  } catch (err) {
+    console.error("GET /pipeline/scripts error:", err);
+    res.status(500).json({ error: "Failed to fetch scripts" });
+  }
+});
+
+// ─── WILDCARD ROUTES (after specific paths) ─────────────────────
+
 // GET /api/pipeline/:id — single pipeline item
 router.get("/:id", async (req, res) => {
   try {
@@ -61,7 +107,7 @@ router.delete("/:id", async (req, res) => {
   }
 });
 
-// ─── TRENDS ──────────────────────────────────────────────────
+// ─── TREND DISCOVERY ────────────────────────────────────────────
 
 // POST /api/pipeline/discover-trends — discover new trends
 router.post("/discover-trends", async (req, res) => {
@@ -105,25 +151,6 @@ router.post("/discover-trends", async (req, res) => {
   } catch (err) {
     console.error("POST /pipeline/discover-trends error:", err);
     res.status(500).json({ error: "Failed to discover trends" });
-  }
-});
-
-// GET /api/pipeline/trends — list all saved trends
-router.get("/trends", async (req, res) => {
-  try {
-    const where = {};
-    if (req.query.platform) where.platform = req.query.platform;
-    if (req.query.status) where.status = req.query.status;
-
-    const trends = await req.prisma.trend.findMany({
-      where,
-      orderBy: { trendScore: "desc" },
-      include: { scripts: { select: { id: true, title: true, status: true } } },
-    });
-    res.json(trends);
-  } catch (err) {
-    console.error("GET /pipeline/trends error:", err);
-    res.status(500).json({ error: "Failed to fetch trends" });
   }
 });
 
@@ -192,29 +219,6 @@ router.post("/generate-script", async (req, res) => {
   } catch (err) {
     console.error("POST /pipeline/generate-script error:", err);
     res.status(500).json({ error: "Failed to generate script" });
-  }
-});
-
-// GET /api/pipeline/scripts — list all scripts
-router.get("/scripts", async (req, res) => {
-  try {
-    const where = {};
-    if (req.query.status) where.status = req.query.status;
-    if (req.query.character_id) where.characterId = req.query.character_id;
-
-    const scripts = await req.prisma.script.findMany({
-      where,
-      orderBy: { createdAt: "desc" },
-      include: {
-        trend: { select: { id: true, topic: true, trendScore: true } },
-        character: { select: { id: true, name: true, niche: true } },
-        pipelineItems: { select: { id: true, stage: true } },
-      },
-    });
-    res.json(scripts);
-  } catch (err) {
-    console.error("GET /pipeline/scripts error:", err);
-    res.status(500).json({ error: "Failed to fetch scripts" });
   }
 });
 
