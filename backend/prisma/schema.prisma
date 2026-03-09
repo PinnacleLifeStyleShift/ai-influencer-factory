@@ -1,0 +1,116 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── CHARACTERS ───────────────────────────────────────────────
+
+model Character {
+  id                String   @id @default(cuid())
+  characterId       String   @unique @map("character_id") // INFL-001, INFL-002...
+  name              String
+  characterType     String?  @map("character_type")
+  niche             String?
+  persona           String?
+  gender            String?
+  ethnicity         String?
+  eyeColor          String?  @map("eye_color")
+  age               String?
+  skinConditions    String?  @map("skin_conditions")
+  advancedFeatures  String?  @map("advanced_features")
+  optionalPrompt    String?  @map("optional_prompt")
+  aspectRatio       String   @default("9:16") @map("aspect_ratio")
+  qualitySetting    String   @default("4K") @map("quality_setting")
+  referenceImageUrl String?  @map("reference_image_url")
+
+  // B-O-P-A Framework
+  bopaBackground    String?  @map("bopa_background")
+  bopaOutfit        String?  @map("bopa_outfit")
+  bopaPoses         String?  @map("bopa_poses")
+  bopaAngles        String?  @map("bopa_angles")
+
+  targetPlatforms   String[] @map("target_platforms")
+  status            String   @default("active")
+  followerCount     Int      @default(0) @map("follower_count")
+  totalViews        Int      @default(0) @map("total_views")
+  engagementRate    String   @default("0.00") @map("engagement_rate")
+  notes             String?
+
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  content           Content[]
+  submissions       CampaignSubmission[]
+
+  @@map("characters")
+}
+
+// ─── CONTENT ──────────────────────────────────────────────────
+
+model Content {
+  id              String   @id @default(cuid())
+  title           String
+  contentType     String?  @map("content_type")
+  platform        String?
+  scheduledDate   String?  @map("scheduled_date")
+  status          String   @default("scheduled")
+  caption         String?
+  hashtags        String?
+  motionPrompt    String?  @map("motion_prompt")
+  views           Int      @default(0)
+  likes           Int      @default(0)
+  notes           String?
+
+  characterId     String   @map("character_id")
+  character       Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("content")
+}
+
+// ─── CAMPAIGNS ────────────────────────────────────────────────
+
+model Campaign {
+  id              String   @id @default(cuid())
+  name            String
+  brand           String?
+  platform        String?
+  brief           String?
+  requirements    String?
+  payoutAmount    String?  @map("payout_amount")
+  deadline        String?
+  status          String   @default("active")
+
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  submissions     CampaignSubmission[]
+
+  @@map("campaigns")
+}
+
+// ─── CAMPAIGN SUBMISSIONS ─────────────────────────────────────
+
+model CampaignSubmission {
+  id              String   @id @default(cuid())
+  submissionUrl   String?  @map("submission_url")
+  notes           String?
+  payout          Float    @default(0)
+  status          String   @default("pending")
+
+  characterId     String   @map("character_id")
+  character       Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  campaignId      String   @map("campaign_id")
+  campaign        Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  submittedAt     DateTime @default(now()) @map("submitted_at")
+
+  @@map("campaign_submissions")
+}

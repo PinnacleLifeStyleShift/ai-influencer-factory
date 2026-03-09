@@ -1,4 +1,5 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
+import * as api from "./api.js";
 import {
   LayoutDashboard, Users, CalendarDays, Megaphone, Zap,
   Plus, X, Search, Trash2, ChevronLeft, ChevronRight,
@@ -8,60 +9,44 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell
 } from "recharts";
 
-// ─── SEED DATA ────────────────────────────────────────────────
-const SEED_CHARACTERS = [
-  {
-    id: "1", character_id: "INFL-001", name: "Veronica X", character_type: "Human",
-    niche: "Fashion & Beauty", persona: "Luxury street-style model with an edge.", gender: "Female",
-    ethnicity: "Mixed / Hybrid", eye_color: "Purple", age: "25", skin_conditions: "",
-    advanced_features: "Heterochromatic iris", optional_prompt: "Cyberpunk aesthetic, neon-lit environment",
-    aspect_ratio: "9:16", quality_setting: "4K", reference_image_url: "",
-    bopa_background: "Urban rooftop, neon city", bopa_outfit: "Holographic streetwear",
-    bopa_poses: "Power stance, looking over shoulder", bopa_angles: "Close-up portrait, ¾ body",
-    target_platforms: ["Instagram", "TikTok"], status: "active",
-    follower_count: 42300, total_views: 1280000, engagement_rate: "6.40", notes: ""
-  },
-  {
-    id: "2", character_id: "INFL-002", name: "Lycan", character_type: "Mammal Hybrid",
-    niche: "Gaming & Tech", persona: "Wolf-human tech reviewer obsessed with future hardware.",
-    gender: "Male", ethnicity: "European", eye_color: "Green", age: "Ageless",
-    skin_conditions: "", advanced_features: "Wolf ears, fangs, fur markings",
-    optional_prompt: "Wearing futuristic streetwear with holographic accents",
-    aspect_ratio: "9:16", quality_setting: "4K", reference_image_url: "",
-    bopa_background: "Dark gaming den, RGB lighting", bopa_outfit: "Tech streetwear",
-    bopa_poses: "Seated lean, pointing at camera", bopa_angles: "Close-up portrait, full body",
-    target_platforms: ["YouTube", "TikTok"], status: "active",
-    follower_count: 89100, total_views: 3400000, engagement_rate: "8.20", notes: ""
-  },
-];
-
-const SEED_CONTENT = [
-  {
-    id: "1", character_id: "1", character_name: "Veronica X", title: "Monday Fit Drop",
-    content_type: "Static Image", platform: "Instagram",
-    scheduled_date: new Date().toISOString().split("T")[0],
-    status: "scheduled", caption: "New look just dropped 🔥", hashtags: "#aimodel #fashion",
-    motion_prompt: "", views: 0, likes: 0
-  },
-  {
-    id: "2", character_id: "2", character_name: "Lycan", title: "RTX 5090 Reaction",
-    content_type: "Animated Video", platform: "YouTube",
-    scheduled_date: new Date(Date.now() + 2 * 86400000).toISOString().split("T")[0],
-    status: "scheduled", caption: "My honest reaction to the new GPU...", hashtags: "#gaming #tech",
-    motion_prompt: "Character turns to look directly at camera, slow dramatic zoom",
-    views: 0, likes: 0
-  },
-];
-
-const SEED_CAMPAIGNS = [
-  {
-    id: "1", name: "Higgsfield Spring Creators", brand: "Higgsfield AI", platform: "Instagram",
-    brief: "Create a 15-second reel showcasing your AI influencer in a lifestyle setting.",
-    requirements: "Must include #HiggsfieldEarn. Paid Partnership label required.",
-    payout_amount: "125.00", deadline: new Date(Date.now() + 8 * 86400000).toISOString().split("T")[0],
-    status: "active", submissions: []
-  },
-];
+// ─── API → Frontend Field Normalizers ─────────────────────────
+// The API returns camelCase; the UI components use snake_case
+function normalizeChar(c) {
+  return {
+    id: c.id, character_id: c.characterId, name: c.name,
+    character_type: c.characterType, niche: c.niche, persona: c.persona,
+    gender: c.gender, ethnicity: c.ethnicity, eye_color: c.eyeColor, age: c.age,
+    skin_conditions: c.skinConditions, advanced_features: c.advancedFeatures,
+    optional_prompt: c.optionalPrompt, aspect_ratio: c.aspectRatio,
+    quality_setting: c.qualitySetting, reference_image_url: c.referenceImageUrl,
+    bopa_background: c.bopaBackground, bopa_outfit: c.bopaOutfit,
+    bopa_poses: c.bopaPoses, bopa_angles: c.bopaAngles,
+    target_platforms: c.targetPlatforms || [], status: c.status,
+    follower_count: c.followerCount || 0, total_views: c.totalViews || 0,
+    engagement_rate: c.engagementRate || "0.00", notes: c.notes,
+  };
+}
+function normalizeContent(c) {
+  return {
+    id: c.id, character_id: c.characterId, character_name: c.character_name || c.character?.name || "",
+    title: c.title, content_type: c.contentType, platform: c.platform,
+    scheduled_date: c.scheduledDate, status: c.status, caption: c.caption,
+    hashtags: c.hashtags, motion_prompt: c.motionPrompt,
+    views: c.views || 0, likes: c.likes || 0, notes: c.notes,
+  };
+}
+function normalizeCampaign(c) {
+  return {
+    id: c.id, name: c.name, brand: c.brand, platform: c.platform,
+    brief: c.brief, requirements: c.requirements,
+    payout_amount: c.payoutAmount, deadline: c.deadline, status: c.status,
+    submissions: (c.submissions || []).map(s => ({
+      id: s.id, character_id: s.characterId, character_name: s.character_name || s.character?.name || "",
+      submission_url: s.submissionUrl, notes: s.notes, payout: s.payout || 0,
+      status: s.status, submitted_at: s.submittedAt,
+    })),
+  };
+}
 
 // ─── CONSTANTS ────────────────────────────────────────────────
 const TYPES = ["Human", "Mammal Hybrid", "Reptile Hybrid", "Alien / Sci-Fi", "Fantasy Creature"];
@@ -318,18 +303,26 @@ function Characters({ characters, setCharacters }) {
     (!typeFilter || c.character_type === typeFilter)
   );
 
-  const save = useCallback((form) => {
-    if (modal?.id) {
-      setCharacters(cs => cs.map(c => c.id===modal.id ? {...form,id:c.id,character_id:c.character_id} : c));
-    } else {
-      const id = uid();
-      const character_id = `INFL-${String(characters.length+1).padStart(3,"0")}`;
-      setCharacters(cs => [...cs, {...form,id,character_id}]);
-    }
-    setModal(null);
-  }, [modal, characters.length, setCharacters]);
+  const save = useCallback(async (form) => {
+    try {
+      if (modal?.id) {
+        const updated = await api.characters.update(modal.id, form);
+        setCharacters(cs => cs.map(c => c.id===modal.id ? normalizeChar(updated) : c));
+      } else {
+        const created = await api.characters.create(form);
+        setCharacters(cs => [...cs, normalizeChar(created)]);
+      }
+      setModal(null);
+    } catch (err) { console.error("Save character failed:", err); }
+  }, [modal, setCharacters]);
 
-  const del = (id,name) => { if(confirm(`Delete ${name}?`)) setCharacters(cs=>cs.filter(c=>c.id!==id)); };
+  const del = async (id,name) => {
+    if(!confirm(`Delete ${name}?`)) return;
+    try {
+      await api.characters.delete(id);
+      setCharacters(cs=>cs.filter(c=>c.id!==id));
+    } catch (err) { console.error("Delete character failed:", err); }
+  };
 
   if (detail) {
     const c = characters.find(x=>x.id===detail);
@@ -476,12 +469,13 @@ function ContentCalendar({ content, setContent, characters }) {
   const todayD = new Date().getDate(), todayM = new Date().getMonth(), todayY = new Date().getFullYear();
   const isToday = d => d===todayD && m===todayM && y===todayY;
 
-  const saveContent = () => {
+  const saveContent = async () => {
     if (!f.title || !f.character_id) return;
-    const char = characters.find(c=>c.id===f.character_id);
-    const item = {...f, id:uid(), character_name:char?.name||""};
-    setContent(cs=>[...cs,item]);
-    setModal(null); setF(EMPTY_CONTENT);
+    try {
+      const created = await api.content.create(f);
+      setContent(cs=>[...cs, normalizeContent(created)]);
+      setModal(null); setF(EMPTY_CONTENT);
+    } catch (err) { console.error("Save content failed:", err); }
   };
 
   const selectedContent = selectedDay ? forDay(selectedDay) : [];
@@ -542,8 +536,8 @@ function ContentCalendar({ content, setContent, characters }) {
                   {c.motion_prompt&&<div className="text-zinc-500 text-xs font-mono mt-0.5 truncate">"{c.motion_prompt}"</div>}
                 </div>
                 <div className="flex gap-2 text-xs">
-                  {c.status==="scheduled"&&<button onClick={()=>setContent(cs=>cs.map(x=>x.id===c.id?{...x,status:"published"}:x))} className="text-[#C8FF00] hover:underline">Publish</button>}
-                  <button onClick={()=>setContent(cs=>cs.filter(x=>x.id!==c.id))} className="text-red-400 hover:underline">Delete</button>
+                  {c.status==="scheduled"&&<button onClick={async()=>{try{const u=await api.content.update(c.id,{status:"published"});setContent(cs=>cs.map(x=>x.id===c.id?normalizeContent(u):x));}catch(e){console.error(e);}}} className="text-[#C8FF00] hover:underline">Publish</button>}
+                  <button onClick={async()=>{try{await api.content.delete(c.id);setContent(cs=>cs.filter(x=>x.id!==c.id));}catch(e){console.error(e);}}} className="text-red-400 hover:underline">Delete</button>
                 </div>
               </div>
             ))}
@@ -605,19 +599,29 @@ function Campaigns({ campaigns, setCampaigns, characters }) {
   const [campForm, setCampForm] = useState(EMPTY_CAMP);
   const setC = (k,v) => setCampForm(p=>({...p,[k]:v}));
 
-  const saveCampaign = () => {
+  const saveCampaign = async () => {
     if(!campForm.name) return;
-    if(modal?.id) setCampaigns(cs=>cs.map(c=>c.id===modal.id?{...campForm,id:c.id}:c));
-    else setCampaigns(cs=>[...cs,{...campForm,id:uid()}]);
-    setModal(null); setCampForm(EMPTY_CAMP);
+    try {
+      if(modal?.id) {
+        const updated = await api.campaigns.update(modal.id, campForm);
+        setCampaigns(cs=>cs.map(c=>c.id===modal.id?normalizeCampaign(updated):c));
+      } else {
+        const created = await api.campaigns.create(campForm);
+        setCampaigns(cs=>[...cs, normalizeCampaign(created)]);
+      }
+      setModal(null); setCampForm(EMPTY_CAMP);
+    } catch(err) { console.error("Save campaign failed:", err); }
   };
 
-  const submit = () => {
+  const submit = async () => {
     if(!subForm.character_id) return;
-    const char = characters.find(c=>c.id===subForm.character_id);
-    const sub = {...subForm, id:uid(), character_name:char?.name||"", submitted_at:new Date().toISOString(), payout:0, status:"pending"};
-    setCampaigns(cs=>cs.map(c=>c.id===submitModal.id?{...c,submissions:[...(c.submissions||[]),sub]}:c));
-    setSubmitModal(null); setSubForm({character_id:"",submission_url:"",notes:""});
+    try {
+      await api.campaigns.submit(submitModal.id, subForm);
+      // Refresh campaigns to get updated submissions
+      const allCamps = await api.campaigns.list();
+      setCampaigns(allCamps.map(normalizeCampaign));
+      setSubmitModal(null); setSubForm({character_id:"",submission_url:"",notes:""});
+    } catch(err) { console.error("Submit failed:", err); }
   };
 
   const totalEarned = campaigns.reduce((s,c)=>s+(c.submissions||[]).reduce((a,b)=>a+parseFloat(b.payout||0),0),0);
@@ -681,7 +685,7 @@ function Campaigns({ campaigns, setCampaigns, characters }) {
                   <div className="flex gap-2 flex-shrink-0">
                     {c.status==="active"&&<button onClick={()=>setSubmitModal(c)} className={css.btnVolt+" text-xs"}>Submit Character</button>}
                     <button onClick={()=>{setCampForm({...c});setModal(c);}} className={`${css.btnGhost} text-xs`}>Edit</button>
-                    <button onClick={()=>{if(confirm("Delete?"))setCampaigns(cs=>cs.filter(x=>x.id!==c.id));}} className={`${css.btnGhost} text-xs text-red-400 border-red-400/20 hover:border-red-400`}>Delete</button>
+                    <button onClick={async()=>{if(confirm("Delete?")){try{await api.campaigns.delete(c.id);setCampaigns(cs=>cs.filter(x=>x.id!==c.id));}catch(e){console.error(e);}}}} className={`${css.btnGhost} text-xs text-red-400 border-red-400/20 hover:border-red-400`}>Delete</button>
                   </div>
                 </div>
               </div>
@@ -747,9 +751,54 @@ const NAV = [
 
 export default function App() {
   const [page, setPage] = useState("dashboard");
-  const [characters, setCharacters] = useState(SEED_CHARACTERS);
-  const [content, setContent] = useState(SEED_CONTENT);
-  const [campaigns, setCampaigns] = useState(SEED_CAMPAIGNS);
+  const [characters, setCharacters] = useState([]);
+  const [content, setContent] = useState([]);
+  const [campaigns, setCampaigns] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  // Fetch all data from API on mount
+  useEffect(() => {
+    Promise.all([
+      api.characters.list().then(data => data.map(normalizeChar)),
+      api.content.list().then(data => data.map(normalizeContent)),
+      api.campaigns.list().then(data => data.map(normalizeCampaign)),
+    ])
+      .then(([chars, cont, camps]) => {
+        setCharacters(chars);
+        setContent(cont);
+        setCampaigns(camps);
+      })
+      .catch(err => console.error("Failed to load data:", err))
+      .finally(() => setLoading(false));
+  }, []);
+
+  // ─── API-backed mutation wrappers ─────────────────────────
+  const apiSetCharacters = useCallback((updater) => {
+    // For simple state updates from child components, we intercept
+    // and handle API calls in the child components directly.
+    // This wrapper is for compatibility with existing component props.
+    if (typeof updater === "function") {
+      setCharacters(updater);
+    } else {
+      setCharacters(updater);
+    }
+  }, []);
+
+  const apiSetContent = useCallback((updater) => {
+    if (typeof updater === "function") {
+      setContent(updater);
+    } else {
+      setContent(updater);
+    }
+  }, []);
+
+  const apiSetCampaigns = useCallback((updater) => {
+    if (typeof updater === "function") {
+      setCampaigns(updater);
+    } else {
+      setCampaigns(updater);
+    }
+  }, []);
 
   return (
     <>
@@ -797,10 +846,21 @@ export default function App() {
 
         {/* Main */}
         <main style={{ flex:1, overflowY:"auto" }}>
-          {page==="dashboard" && <Dashboard characters={characters} content={content} campaigns={campaigns} />}
-          {page==="characters" && <Characters characters={characters} setCharacters={setCharacters} />}
-          {page==="calendar" && <ContentCalendar content={content} setContent={setContent} characters={characters} />}
-          {page==="campaigns" && <Campaigns campaigns={campaigns} setCampaigns={setCampaigns} characters={characters} />}
+          {loading ? (
+            <div className="flex items-center justify-center h-full">
+              <div className="text-center">
+                <div className="w-8 h-8 border-2 border-[#C8FF00] border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+                <p className="text-zinc-500 text-sm">Loading portfolio...</p>
+              </div>
+            </div>
+          ) : (
+            <>
+              {page==="dashboard" && <Dashboard characters={characters} content={content} campaigns={campaigns} />}
+              {page==="characters" && <Characters characters={characters} setCharacters={apiSetCharacters} />}
+              {page==="calendar" && <ContentCalendar content={content} setContent={apiSetContent} characters={characters} />}
+              {page==="campaigns" && <Campaigns campaigns={campaigns} setCampaigns={apiSetCampaigns} characters={characters} />}
+            </>
+          )}
         </main>
       </div>
     </>
