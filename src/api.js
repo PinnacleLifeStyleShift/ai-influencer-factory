@@ -49,3 +49,27 @@ export const campaigns = {
 export const dashboard = {
   get: () => request("/api/dashboard"),
 };
+
+// ─── Pipeline ────────────────────────────────────────────
+export const pipeline = {
+  list: (params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return request(`/api/pipeline${qs ? `?${qs}` : ""}`);
+  },
+  get: (id) => request(`/api/pipeline/${id}`),
+  discoverTrends: (data) => request("/api/pipeline/discover-trends", { method: "POST", body: JSON.stringify(data) }),
+  listTrends: () => request("/api/pipeline/trends"),
+  generateScript: (data) => request("/api/pipeline/generate-script", { method: "POST", body: JSON.stringify(data) }),
+  listScripts: () => request("/api/pipeline/scripts"),
+  generateContent: (data) =>
+    request("/api/pipeline/generate-content", { method: "POST", body: JSON.stringify(data) }),
+  generateCaption: (data) =>
+    request("/api/pipeline/generate-caption", { method: "POST", body: JSON.stringify(data) }),
+  approve: (id, data = {}) =>
+    request(`/api/pipeline/${id}/approve`, { method: "POST", body: JSON.stringify(data) }),
+  reject: (id, data = {}) =>
+    request(`/api/pipeline/${id}/reject`, { method: "POST", body: JSON.stringify(data) }),
+  schedule: (id, data) =>
+    request(`/api/pipeline/${id}/schedule`, { method: "POST", body: JSON.stringify(data) }),
+  delete: (id) => request(`/api/pipeline/${id}`, { method: "DELETE" }),
+};

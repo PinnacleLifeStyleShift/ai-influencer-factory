@@ -8,6 +8,7 @@ import characterRoutes from "./routes/characters.js";
 import contentRoutes from "./routes/content.js";
 import campaignRoutes from "./routes/campaigns.js";
 import dashboardRoutes from "./routes/dashboard.js";
+import pipelineRoutes from "./routes/pipeline.js";
 
 const prisma = new PrismaClient();
 const app = express();
@@ -30,6 +31,7 @@ app.use("/api/characters", characterRoutes);
 app.use("/api/content", contentRoutes);
 app.use("/api/campaigns", campaignRoutes);
 app.use("/api/dashboard", dashboardRoutes);
+app.use("/api/pipeline", pipelineRoutes);
 
 // Health check
 app.get("/", (_req, res) => res.json({ status: "ok", service: "ai-influencer-factory-api" }));

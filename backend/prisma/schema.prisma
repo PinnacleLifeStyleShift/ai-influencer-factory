@@ -45,6 +45,8 @@ model Character {
 
   content           Content[]
   submissions       CampaignSubmission[]
+  scripts           Script[]
+  pipelineItems     PipelineItem[]
 
   @@map("characters")
 }
@@ -67,6 +69,8 @@ model Content {
 
   characterId     String   @map("character_id")
   character       Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  pipelineItems   PipelineItem[]
 
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
@@ -113,4 +117,84 @@ model CampaignSubmission {
   submittedAt     DateTime @default(now()) @map("submitted_at")
 
   @@map("campaign_submissions")
+}
+
+// ─── TRENDS ──────────────────────────────────────────────────
+
+model Trend {
+  id            String   @id @default(cuid())
+  platform      String   // TikTok, Instagram, YouTube
+  topic         String
+  description   String?
+  hashtags      String[] @default([])
+  trendScore    Float    @default(0) @map("trend_score")
+  source        String?  // URL or reference
+  status        String   @default("new") // new, scripted, used, expired
+
+  scripts       Script[]
+
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("trends")
+}
+
+// ─── SCRIPTS ─────────────────────────────────────────────────
+
+model Script {
+  id            String   @id @default(cuid())
+  title         String
+  hook          String?  // Opening hook line
+  body          String?  // Main script content
+  callToAction  String?  @map("call_to_action")
+  platform      String?
+  duration      String?  // "15s", "30s", "60s"
+  tone          String?  // funny, educational, dramatic, etc.
+  status        String   @default("draft") // draft, approved, in_production, completed
+
+  trendId       String?  @map("trend_id")
+  trend         Trend?   @relation(fields: [trendId], references: [id])
+
+  characterId   String?  @map("character_id")
+  character     Character? @relation(fields: [characterId], references: [id])
+
+  pipelineItems PipelineItem[]
+
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("scripts")
+}
+
+// ─── PIPELINE ITEMS ──────────────────────────────────────────
+
+model PipelineItem {
+  id            String    @id @default(cuid())
+  stage         String    @default("draft") // draft, content_generated, review, approved, scheduled, published
+
+  scriptId      String?   @map("script_id")
+  script        Script?   @relation(fields: [scriptId], references: [id])
+
+  contentId     String?   @map("content_id")
+  content       Content?  @relation(fields: [contentId], references: [id])
+
+  characterId   String    @map("character_id")
+  character     Character @relation(fields: [characterId], references: [id])
+
+  imageUrl      String?   @map("image_url")
+  videoUrl      String?   @map("video_url")
+  caption       String?
+  hashtags      String?
+
+  scheduledDate String?   @map("scheduled_date")
+  platform      String?
+
+  reviewNotes   String?   @map("review_notes")
+  approvedAt    DateTime? @map("approved_at")
+  rejectedAt    DateTime? @map("rejected_at")
+
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@map("pipeline_items")
 }
