@@ -2,10 +2,10 @@ FROM node:20-alpine
 
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm ci
+RUN npm ci --ignore-scripts
 COPY . .
 
-# Generate Prisma client
+# Generate Prisma client (after schema is copied)
 RUN npx prisma generate
 
 # Remove dev dependencies to slim down the image
