@@ -43,58 +43,77 @@ export function buildPromptFromCharacter(character) {
 }
 
 /**
- * Maps character aspect_ratio to Higgsfield width_and_height format.
+ * Maps character aspect_ratio to Higgsfield pixel dimensions.
+ * New platform API uses "WIDTHxHEIGHT" format (e.g. "1696x960").
  */
 function mapAspectRatio(aspectRatio) {
   const mapping = {
-    "9:16": "720p_9:16",
-    "1:1": "720p_1:1",
-    "16:9": "720p_16:9",
+    "9:16": "960x1696",   // portrait
+    "1:1": "1024x1024",   // square
+    "16:9": "1696x960",   // landscape
   };
-  return mapping[aspectRatio] || "720p_1:1";
+  return mapping[aspectRatio] || "1024x1024";
 }
 
 /**
- * Calls the Higgsfield AI text2image/soul endpoint.
+ * Calls the Higgsfield AI platform text2image/soul endpoint.
+ * Uses the new platform.higgsfield.ai API with hf-api-key + hf-secret auth.
  * @param {string} prompt - The image generation prompt
  * @param {Object} options - { aspectRatio, quality }
  * @returns {Promise<string>} - URL of the generated image
  */
 export async function generateImage(prompt, options = {}) {
   const apiKey = process.env.HIGGSFIELD_API_KEY;
-  if (!apiKey) {
-    throw new Error("HIGGSFIELD_API_KEY environment variable is not configured");
+  const secret = process.env.HIGGSFIELD_SECRET;
+  if (!apiKey || !secret) {
+    throw new Error("HIGGSFIELD_API_KEY and HIGGSFIELD_SECRET environment variables must be configured");
   }
 
   const body = {
-    prompt,
-    width_and_height: mapAspectRatio(options.aspectRatio || "1:1"),
-    quality: options.quality || "4K",
-    batch_size: 1,
+    params: {
+      prompt,
+      width_and_height: mapAspectRatio(options.aspectRatio || "1:1"),
+      quality: "720p",
+      batch_size: 1,
+      enhance_prompt: true,
+    },
   };
 
   console.log("Higgsfield request:", JSON.stringify(body, null, 2));
 
-  const response = await fetch("https://api.higgsfield.ai/v1/text2image/soul", {
+  const response = await fetch("https://platform.higgsfield.ai/v1/text2image/soul", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
+      Accept: "application/json",
+      "hf-api-key": apiKey,
+      "hf-secret": secret,
     },
     body: JSON.stringify(body),
   });
 
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
+    const errorText = await response.text().catch(() => "");
+    let errorDetail = errorText;
+    try {
+      const errorJson = JSON.parse(errorText);
+      errorDetail = errorJson.detail || errorJson.message || errorJson.error || errorText;
+    } catch {}
     throw new Error(
-      `Higgsfield API error (${response.status}): ${errorData.message || errorData.error || response.statusText}`
+      `Higgsfield API error (${response.status}): ${errorDetail}`
     );
   }
 
   const data = await response.json();
   console.log("Higgsfield response:", JSON.stringify(data, null, 2));
 
-  // Extract image URL — try multiple possible paths in the response
+  // The new platform API returns a job_set_id for async processing.
+  // If we get a job ID, poll for the result.
+  if (data?.job_set_id) {
+    return await pollForResult(data.job_set_id, apiKey, secret);
+  }
+
+  // Direct image URL response (fallback)
   const imageUrl =
     data?.images?.[0]?.url ||
     data?.results?.[0]?.url ||
@@ -106,4 +125,52 @@ export async function generateImage(prompt, options = {}) {
   }
 
   return imageUrl;
+}
+
+/**
+ * Polls the Higgsfield job status endpoint until the image is ready.
+ * @param {string} jobSetId - The job set ID from the generation request
+ * @param {string} apiKey - Higgsfield API key
+ * @param {string} secret - Higgsfield secret
+ * @returns {Promise<string>} - URL of the generated image
+ */
+async function pollForResult(jobSetId, apiKey, secret, maxAttempts = 30) {
+  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  for (let i = 0; i < maxAttempts; i++) {
+    await delay(3000); // Wait 3 seconds between polls
+
+    const response = await fetch(`https://platform.higgsfield.ai/v1/job-sets/${jobSetId}`, {
+      headers: {
+        Accept: "application/json",
+        "hf-api-key": apiKey,
+        "hf-secret": secret,
+      },
+    });
+
+    if (!response.ok) {
+      console.log(`Poll attempt ${i + 1}: status ${response.status}`);
+      continue;
+    }
+
+    const data = await response.json();
+    console.log(`Poll attempt ${i + 1}: status=${data.status}`);
+
+    if (data.status === "completed" || data.status === "done") {
+      const imageUrl =
+        data?.jobs?.[0]?.output?.url ||
+        data?.jobs?.[0]?.result?.url ||
+        data?.results?.[0]?.url ||
+        data?.output?.url;
+
+      if (imageUrl) return imageUrl;
+      throw new Error("Job completed but no image URL found in response");
+    }
+
+    if (data.status === "failed" || data.status === "error") {
+      throw new Error(`Image generation failed: ${data.error || "Unknown error"}`);
+    }
+  }
+
+  throw new Error("Image generation timed out after polling");
 }
