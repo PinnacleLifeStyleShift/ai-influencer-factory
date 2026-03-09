@@ -19,6 +19,7 @@ export const characters = {
   create: (data) => request("/api/characters", { method: "POST", body: JSON.stringify(data) }),
   update: (id, data) => request(`/api/characters/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   delete: (id) => request(`/api/characters/${id}`, { method: "DELETE" }),
+  generateImage: (id) => request(`/api/characters/${id}/generate-image`, { method: "POST" }),
 };
 
 // ─── Content ──────────────────────────────────────────────

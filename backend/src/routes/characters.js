@@ -129,4 +129,42 @@ router.delete("/:id", async (req, res) => {
   }
 });
 
+// POST /api/characters/:id/generate-image — AI image generation via Higgsfield
+router.post("/:id/generate-image", async (req, res) => {
+  try {
+    // 1. Fetch character
+    const character = await req.prisma.character.findUnique({
+      where: { id: req.params.id },
+    });
+    if (!character) return res.status(404).json({ error: "Character not found" });
+
+    // 2. Build prompt and generate image
+    const { buildPromptFromCharacter, generateImage } = await import("../services/imageGeneration.js");
+    const prompt = buildPromptFromCharacter(character);
+    const imageUrl = await generateImage(prompt, {
+      aspectRatio: character.aspectRatio,
+      quality: character.qualitySetting,
+    });
+
+    // 3. Save image URL to database
+    const updated = await req.prisma.character.update({
+      where: { id: req.params.id },
+      data: { referenceImageUrl: imageUrl },
+    });
+
+    res.json(updated);
+  } catch (err) {
+    console.error("POST /characters/:id/generate-image error:", err);
+
+    if (err.message.includes("HIGGSFIELD_API_KEY")) {
+      return res.status(503).json({ error: "Image generation service is not configured" });
+    }
+    if (err.message.includes("Higgsfield API error")) {
+      return res.status(502).json({ error: err.message });
+    }
+
+    res.status(500).json({ error: "Failed to generate image" });
+  }
+});
+
 export default router;

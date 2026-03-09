@@ -3,7 +3,8 @@ import * as api from "./api.js";
 import {
   LayoutDashboard, Users, CalendarDays, Megaphone, Zap,
   Plus, X, Search, Trash2, ChevronLeft, ChevronRight,
-  ArrowLeft, Video, TrendingUp, DollarSign, Eye, ExternalLink
+  ArrowLeft, Video, TrendingUp, DollarSign, Eye, ExternalLink,
+  Loader2, Image as ImageIcon
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell
@@ -122,6 +123,38 @@ function Textarea({ label, ...props }) {
   return <div><label className={css.label}>{label}</label><textarea className={`${css.input} resize-none`} {...props} /></div>;
 }
 
+function Avatar({ name, imageUrl, type, size = 40 }) {
+  const [imgError, setImgError] = useState(false);
+  const initials = (name || "?").split(" ").map(w => w[0]).join("").toUpperCase().slice(0, 2);
+  const bg = TYPE_COLORS[type] || "#71717a";
+
+  if (imageUrl && !imgError) {
+    return (
+      <img
+        src={imageUrl}
+        alt={name}
+        className="rounded-lg object-cover flex-shrink-0"
+        style={{ width: size, height: size }}
+        onError={() => setImgError(true)}
+      />
+    );
+  }
+  return (
+    <div
+      className="rounded-lg flex items-center justify-center flex-shrink-0"
+      style={{
+        width: size, height: size,
+        background: bg + "22", color: bg,
+        fontSize: size * 0.35,
+        fontFamily: "'Bebas Neue', sans-serif",
+        letterSpacing: "0.05em", fontWeight: 600,
+      }}
+    >
+      {initials}
+    </div>
+  );
+}
+
 // ─── DASHBOARD ────────────────────────────────────────────────
 function Dashboard({ characters, content, campaigns }) {
   const published = content.filter(c => c.status === "published");
@@ -199,7 +232,7 @@ function Dashboard({ characters, content, campaigns }) {
             <tbody>
               {top.map(c => (
                 <tr key={c.id} className="border-b border-[#2a2a3a]/50 hover:bg-white/[0.02]">
-                  <td className="py-3 pr-4"><span className="font-mono text-[11px] text-zinc-600 mr-2">{c.character_id}</span><span className="text-zinc-100">{c.name}</span></td>
+                  <td className="py-3 pr-4"><div className="flex items-center gap-2"><Avatar name={c.name} imageUrl={c.reference_image_url} type={c.character_type} size={28} /><div><span className="font-mono text-[11px] text-zinc-600 mr-2">{c.character_id}</span><span className="text-zinc-100">{c.name}</span></div></div></td>
                   <td className="py-3 pr-4 text-zinc-400">{c.niche || "—"}</td>
                   <td className="py-3 pr-4 font-mono text-zinc-300">{(c.follower_count||0).toLocaleString()}</td>
                   <td className="py-3 pr-4 font-mono text-zinc-300">{(c.total_views||0).toLocaleString()}</td>
@@ -297,6 +330,7 @@ function Characters({ characters, setCharacters }) {
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
   const [detail, setDetail] = useState(null);
+  const [generatingImage, setGeneratingImage] = useState(false);
 
   const filtered = characters.filter(c =>
     (!search || [c.name,c.niche,c.persona].some(v=>(v||"").toLowerCase().includes(search.toLowerCase()))) &&
@@ -324,22 +358,41 @@ function Characters({ characters, setCharacters }) {
     } catch (err) { console.error("Delete character failed:", err); }
   };
 
+  const handleGenerateImage = async (id) => {
+    setGeneratingImage(true);
+    try {
+      const updated = await api.characters.generateImage(id);
+      setCharacters(cs => cs.map(c => c.id === id ? normalizeChar(updated) : c));
+    } catch (err) {
+      console.error("Generate image failed:", err);
+      alert(`Image generation failed: ${err.message}`);
+    } finally {
+      setGeneratingImage(false);
+    }
+  };
+
   if (detail) {
     const c = characters.find(x=>x.id===detail);
     if (!c) { setDetail(null); return null; }
     return (
       <div className="p-8">
         <button onClick={()=>setDetail(null)} className="flex items-center gap-2 text-zinc-400 hover:text-zinc-100 mb-5 transition-colors text-sm"><ArrowLeft size={16}/> Back to Characters</button>
-        <div className="flex items-start justify-between mb-6">
-          <div>
+        <div className="flex items-start gap-6 mb-6">
+          <Avatar name={c.name} imageUrl={c.reference_image_url} type={c.character_type} size={120} />
+          <div className="flex-1">
             <div className="flex items-center gap-3 mb-1">
               <span className="font-mono text-xs text-zinc-600">{c.character_id}</span>
               <span className={`${css.badge} ${STATUS_CLS[c.status]||""}`}>{c.status}</span>
             </div>
             <h1 style={{ fontFamily: "'Bebas Neue', sans-serif", letterSpacing: "0.1em" }} className="text-4xl text-zinc-100">{c.name.toUpperCase()}</h1>
-            <p className="text-zinc-500 text-sm">{c.character_type} · {c.niche}</p>
+            <p className="text-zinc-500 text-sm mb-3">{c.character_type} · {c.niche}</p>
+            <div className="flex gap-2">
+              <button onClick={() => handleGenerateImage(c.id)} disabled={generatingImage} className={`${css.btnVolt} flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed`}>
+                {generatingImage ? <><Loader2 size={14} className="animate-spin" /> Generating...</> : <><ImageIcon size={14} /> Generate AI Image</>}
+              </button>
+              <button onClick={()=>setModal(c)} className={css.btnGhost}>Edit</button>
+            </div>
           </div>
-          <button onClick={()=>setModal(c)} className={css.btnGhost}>Edit</button>
         </div>
 
         <div className="grid grid-cols-4 gap-4 mb-6">
@@ -420,6 +473,9 @@ function Characters({ characters, setCharacters }) {
         <div className="grid grid-cols-3 gap-4">
           {filtered.map(c => (
             <div key={c.id} className={`${css.card} p-5 group hover:border-[#3a3a4a] transition-colors cursor-pointer`} onClick={()=>setDetail(c.id)}>
+              <div className="flex justify-center mb-4">
+                <Avatar name={c.name} imageUrl={c.reference_image_url} type={c.character_type} size={64} />
+              </div>
               <div className="flex items-start justify-between mb-3">
                 <div>
                   <span className="font-mono text-[11px] text-zinc-600 block">{c.character_id}</span>
