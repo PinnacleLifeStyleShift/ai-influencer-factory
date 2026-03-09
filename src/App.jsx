@@ -9,6 +9,7 @@ import {
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell
 } from "recharts";
+import PipelinePage from "./PipelinePage.jsx";
 
 // ─── API → Frontend Field Normalizers ─────────────────────────
 // The API returns camelCase; the UI components use snake_case
@@ -801,6 +802,7 @@ function Campaigns({ campaigns, setCampaigns, characters }) {
 const NAV = [
   { id:"dashboard", icon:LayoutDashboard, label:"Dashboard" },
   { id:"characters", icon:Users, label:"Characters" },
+  { id:"pipeline", icon:Zap, label:"Pipeline" },
   { id:"calendar", icon:CalendarDays, label:"Content Calendar" },
   { id:"campaigns", icon:Megaphone, label:"Campaigns" },
 ];
@@ -913,6 +915,7 @@ export default function App() {
             <>
               {page==="dashboard" && <Dashboard characters={characters} content={content} campaigns={campaigns} />}
               {page==="characters" && <Characters characters={characters} setCharacters={apiSetCharacters} />}
+              {page==="pipeline" && <PipelinePage characters={characters} />}
               {page==="calendar" && <ContentCalendar content={content} setContent={apiSetContent} characters={characters} />}
               {page==="campaigns" && <Campaigns campaigns={campaigns} setCampaigns={apiSetCampaigns} characters={characters} />}
             </>
