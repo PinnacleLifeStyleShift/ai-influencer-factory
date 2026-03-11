@@ -240,7 +240,7 @@ router.post("/generate-content", async (req, res) => {
     if (type === "image") {
       // Build prompt from character + script context
       const prompt = buildPromptFromCharacter(item.character);
-      const result = await generateImage(prompt, {
+      const imageUrl = await generateImage(prompt, {
         aspectRatio: item.character.aspectRatio || "9:16",
       });
 
@@ -248,13 +248,13 @@ router.post("/generate-content", async (req, res) => {
       const updated = await req.prisma.pipelineItem.update({
         where: { id: pipelineItemId },
         data: {
-          imageUrl: result.imageUrl,
+          imageUrl,
           stage: "content_generated",
         },
         include: { script: true, character: { select: { name: true } } },
       });
 
-      res.json({ success: true, type: "image", pipelineItem: updated, imageUrl: result.imageUrl });
+      res.json({ success: true, type: "image", pipelineItem: updated, imageUrl });
     } else {
       // Video generation would go here — using existing videoGeneration service
       res.json({
