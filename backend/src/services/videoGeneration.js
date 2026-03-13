@@ -93,7 +93,7 @@ export async function generateVideoFromText(prompt, options = {}) {
   const taskId = data?.data?.task_id;
   if (!taskId) throw new Error("Kling did not return a task_id");
 
-  return await pollKlingTask(taskId, token);
+  return await pollKlingTask(taskId, token, 60, "text2video");
 }
 
 // ---------------------------------------------------------------------------
@@ -134,20 +134,20 @@ export async function generateVideoFromImage(imageUrl, prompt = "", options = {}
   const taskId = data?.data?.task_id;
   if (!taskId) throw new Error("Kling did not return a task_id");
 
-  return await pollKlingTask(taskId, token);
+  return await pollKlingTask(taskId, token, 60, "image2video");
 }
 
 // ---------------------------------------------------------------------------
 // Poll for task completion
 // ---------------------------------------------------------------------------
 
-async function pollKlingTask(taskId, token, maxAttempts = 60) {
+async function pollKlingTask(taskId, token, maxAttempts = 60, endpoint = "image2video") {
   const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
   for (let i = 0; i < maxAttempts; i++) {
-    await delay(5000); // Kling videos take longer — poll every 5s
+    await delay(10000); // Kling videos take 3-6 min — poll every 10s
 
-    const res = await fetch(`${KLING_BASE}/v1/videos/text2video/${taskId}`, {
+    const res = await fetch(`${KLING_BASE}/v1/videos/${endpoint}/${taskId}`, {
       headers: {
         Authorization: `Bearer ${token}`,
       },

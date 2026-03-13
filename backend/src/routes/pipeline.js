@@ -3,6 +3,7 @@ import { discoverTrends, analyzeTrendRelevance } from "../services/trendDiscover
 import { generateScript } from "../services/scriptGeneration.js";
 import { generateCaption, generateHashtags } from "../services/captionGeneration.js";
 import { generateImage, buildPromptFromCharacter } from "../services/imageGeneration.js";
+import { generateVideoFromImage } from "../services/videoGeneration.js";
 
 const router = Router();
 
@@ -255,12 +256,39 @@ router.post("/generate-content", async (req, res) => {
       });
 
       res.json({ success: true, type: "image", pipelineItem: updated, imageUrl });
-    } else {
-      // Video generation would go here — using existing videoGeneration service
-      res.json({
-        success: false,
-        message: "Video generation via pipeline coming soon. Use /api/characters/:id/generate-video directly.",
+    } else if (type === "video") {
+      // Requires an image first — use existing imageUrl or generate one
+      let sourceImage = item.imageUrl;
+      if (!sourceImage) {
+        const prompt = buildPromptFromCharacter(item.character);
+        sourceImage = await generateImage(prompt, {
+          aspectRatio: item.character.aspectRatio || "9:16",
+        });
+      }
+
+      // Build a motion prompt from the script
+      const motionPrompt = item.script
+        ? `${item.script.hook || ""} ${item.script.body || ""}`.trim().slice(0, 500)
+        : "Subtle natural movement, gentle head turn, cinematic lighting";
+
+      const result = await generateVideoFromImage(sourceImage, motionPrompt, {
+        duration: "5",
+        mode: "std",
       });
+
+      const updated = await req.prisma.pipelineItem.update({
+        where: { id: pipelineItemId },
+        data: {
+          imageUrl: sourceImage,
+          videoUrl: result.videoUrl,
+          stage: "content_generated",
+        },
+        include: { script: true, character: { select: { name: true } } },
+      });
+
+      res.json({ success: true, type: "video", pipelineItem: updated, videoUrl: result.videoUrl });
+    } else {
+      res.status(400).json({ error: `Unsupported content type: ${type}` });
     }
   } catch (err) {
     console.error("POST /pipeline/generate-content error:", err);
