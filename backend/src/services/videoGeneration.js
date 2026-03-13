@@ -1,14 +1,103 @@
 /**
- * Kling AI Video Generation Service
- * Generates short videos from text or images using the Kling API.
- * Auth: JWT signed with HS256 using Access Key + Secret Key.
+ * Video Generation Service
+ * fal.ai (primary — Kling via fal) with direct Kling API (fallback).
  */
 
 import crypto from "crypto";
 
 // ---------------------------------------------------------------------------
-// JWT helper (HS256) — no external dependency needed
+// fal.ai (Primary) — Kling image-to-video via fal queue API
 // ---------------------------------------------------------------------------
+
+const FAL_ENDPOINT = "fal-ai/kling-video/v2.1/standard/image-to-video";
+
+async function generateWithFal(imageUrl, prompt, options = {}) {
+  const falKey = process.env.FAL_KEY;
+  if (!falKey) throw new Error("FAL_KEY not configured");
+
+  const body = {
+    prompt: prompt || "Subtle natural movement, gentle motion, cinematic lighting",
+    image_url: imageUrl,
+    duration: options.duration || "5",
+    aspect_ratio: options.aspectRatio || "9:16",
+    negative_prompt: "blur, distort, low quality, jitter",
+    cfg_scale: 0.5,
+  };
+
+  console.log("fal.ai submit:", JSON.stringify(body, null, 2));
+
+  // Step 1: Submit job
+  const submitRes = await fetch(`https://queue.fal.run/${FAL_ENDPOINT}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Key ${falKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!submitRes.ok) {
+    const errText = await submitRes.text().catch(() => "");
+    throw new Error(`fal.ai submit error (${submitRes.status}): ${errText}`);
+  }
+
+  const job = await submitRes.json();
+  const requestId = job.request_id;
+  if (!requestId) throw new Error("fal.ai did not return a request_id");
+
+  console.log("fal.ai job submitted:", requestId);
+
+  // Step 2: Poll for completion
+  return await pollFalJob(requestId, falKey);
+}
+
+async function pollFalJob(requestId, falKey, maxAttempts = 60) {
+  const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+  const statusUrl = `https://queue.fal.run/${FAL_ENDPOINT}/requests/${requestId}/status`;
+
+  for (let i = 0; i < maxAttempts; i++) {
+    await delay(10000); // poll every 10s — videos take 3-6 min
+
+    const res = await fetch(statusUrl, {
+      headers: { Authorization: `Key ${falKey}` },
+    });
+
+    if (!res.ok) {
+      console.log(`fal.ai poll ${i + 1}: HTTP ${res.status}`);
+      continue;
+    }
+
+    const data = await res.json();
+    console.log(`fal.ai poll ${i + 1}: status=${data.status}`);
+
+    if (data.status === "COMPLETED") {
+      // Step 3: Get result
+      const resultRes = await fetch(
+        `https://queue.fal.run/${FAL_ENDPOINT}/requests/${requestId}/response`,
+        { headers: { Authorization: `Key ${falKey}` } }
+      );
+      if (!resultRes.ok) {
+        throw new Error(`fal.ai result fetch failed (${resultRes.status})`);
+      }
+      const result = await resultRes.json();
+      const videoUrl = result?.video?.url;
+      if (!videoUrl) throw new Error("fal.ai completed but no video URL found");
+      return videoUrl;
+    }
+
+    if (data.status === "FAILED" || data.error) {
+      throw new Error(`fal.ai video generation failed: ${data.error || "Unknown error"}`);
+    }
+  }
+
+  throw new Error("fal.ai video generation timed out after polling");
+}
+
+// ---------------------------------------------------------------------------
+// Direct Kling API (Fallback)
+// ---------------------------------------------------------------------------
+
+const KLING_BASE = "https://api.klingai.com";
 
 function base64url(buf) {
   return Buffer.from(buf)
@@ -21,11 +110,7 @@ function base64url(buf) {
 function createJwt(accessKey, secretKey) {
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: "HS256", typ: "JWT" };
-  const payload = {
-    iss: accessKey,
-    exp: now + 1800, // 30 min
-    nbf: now - 5,
-  };
+  const payload = { iss: accessKey, exp: now + 1800, nbf: now - 5 };
 
   const segments = [
     base64url(JSON.stringify(header)),
@@ -40,13 +125,7 @@ function createJwt(accessKey, secretKey) {
   return `${signingInput}.${base64url(signature)}`;
 }
 
-// ---------------------------------------------------------------------------
-// Kling API helpers
-// ---------------------------------------------------------------------------
-
-const KLING_BASE = "https://api.klingai.com";
-
-function getAuth() {
+function getKlingAuth() {
   const accessKey = process.env.KLING_ACCESS_KEY;
   const secretKey = process.env.KLING_SECRET_KEY;
   if (!accessKey || !secretKey) {
@@ -55,59 +134,14 @@ function getAuth() {
   return createJwt(accessKey, secretKey);
 }
 
-// ---------------------------------------------------------------------------
-// Text-to-Video
-// ---------------------------------------------------------------------------
-
-export async function generateVideoFromText(prompt, options = {}) {
-  const token = getAuth();
+async function generateWithKling(imageUrl, prompt, options = {}) {
+  const token = getKlingAuth();
 
   const body = {
-    model_name: options.model || "kling-v2-5-turbo",
-    prompt,
-    cfg_scale: options.cfgScale || 0.5,
-    mode: options.mode || "std",
-    aspect_ratio: options.aspectRatio || "16:9",
-    duration: options.duration || "5",
-  };
-
-  console.log("Kling text-to-video request:", JSON.stringify(body, null, 2));
-
-  const res = await fetch(`${KLING_BASE}/v1/videos/text2video`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    throw new Error(`Kling API error (${res.status}): ${errText}`);
-  }
-
-  const data = await res.json();
-  console.log("Kling text2video response:", JSON.stringify(data, null, 2));
-
-  const taskId = data?.data?.task_id;
-  if (!taskId) throw new Error("Kling did not return a task_id");
-
-  return await pollKlingTask(taskId, token, 60, "text2video");
-}
-
-// ---------------------------------------------------------------------------
-// Image-to-Video
-// ---------------------------------------------------------------------------
-
-export async function generateVideoFromImage(imageUrl, prompt = "", options = {}) {
-  const token = getAuth();
-
-  const body = {
-    model_name: options.model || "kling-v2-5-turbo",
+    model_name: options.model || "kling-v2-1",
     image: imageUrl,
     prompt: prompt || undefined,
-    cfg_scale: options.cfgScale || 0.5,
+    cfg_scale: 0.5,
     mode: options.mode || "std",
     duration: options.duration || "5",
   };
@@ -129,28 +163,21 @@ export async function generateVideoFromImage(imageUrl, prompt = "", options = {}
   }
 
   const data = await res.json();
-  console.log("Kling image2video response:", JSON.stringify(data, null, 2));
-
   const taskId = data?.data?.task_id;
   if (!taskId) throw new Error("Kling did not return a task_id");
 
-  return await pollKlingTask(taskId, token, 60, "image2video");
+  console.log("Kling taskId:", taskId);
+  return await pollKlingTask(taskId, token);
 }
 
-// ---------------------------------------------------------------------------
-// Poll for task completion
-// ---------------------------------------------------------------------------
-
-async function pollKlingTask(taskId, token, maxAttempts = 60, endpoint = "image2video") {
+async function pollKlingTask(taskId, token, maxAttempts = 60) {
   const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
   for (let i = 0; i < maxAttempts; i++) {
-    await delay(10000); // Kling videos take 3-6 min — poll every 10s
+    await delay(10000);
 
-    const res = await fetch(`${KLING_BASE}/v1/videos/${endpoint}/${taskId}`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
+    const res = await fetch(`${KLING_BASE}/v1/videos/image2video/${taskId}`, {
+      headers: { Authorization: `Bearer ${token}` },
     });
 
     if (!res.ok) {
@@ -163,10 +190,8 @@ async function pollKlingTask(taskId, token, maxAttempts = 60, endpoint = "image2
     console.log(`Kling poll ${i + 1}: status=${status}`);
 
     if (status === "succeed") {
-      const videoUrl =
-        data?.data?.task_result?.videos?.[0]?.url ||
-        data?.data?.task_result?.videos?.[0]?.video_url;
-      if (videoUrl) return { videoUrl, taskId };
+      const videoUrl = data?.data?.task_result?.videos?.[0]?.url;
+      if (videoUrl) return videoUrl;
       throw new Error("Kling task succeeded but no video URL found");
     }
 
@@ -178,4 +203,76 @@ async function pollKlingTask(taskId, token, maxAttempts = 60, endpoint = "image2
   }
 
   throw new Error("Kling video generation timed out after polling");
+}
+
+// ---------------------------------------------------------------------------
+// Public API — tries fal.ai first, falls back to direct Kling
+// ---------------------------------------------------------------------------
+
+export async function generateVideoFromImage(imageUrl, prompt = "", options = {}) {
+  let falError;
+
+  // Try fal.ai (primary)
+  if (process.env.FAL_KEY) {
+    try {
+      console.log("Trying fal.ai (primary)...");
+      const videoUrl = await generateWithFal(imageUrl, prompt, options);
+      return { videoUrl };
+    } catch (err) {
+      falError = err;
+      console.error("fal.ai failed:", err.message);
+    }
+  }
+
+  // Fallback to direct Kling API
+  if (process.env.KLING_ACCESS_KEY && process.env.KLING_SECRET_KEY) {
+    try {
+      console.log("Falling back to direct Kling API...");
+      const videoUrl = await generateWithKling(imageUrl, prompt, options);
+      return { videoUrl };
+    } catch (klingErr) {
+      console.error("Kling also failed:", klingErr.message);
+      throw new Error(
+        `All video providers failed. fal.ai: ${falError?.message || "not configured"}. Kling: ${klingErr.message}`
+      );
+    }
+  }
+
+  throw new Error(
+    `Video generation failed. fal.ai: ${falError?.message || "FAL_KEY not configured"}. Kling: KLING keys not configured.`
+  );
+}
+
+export async function generateVideoFromText(prompt, options = {}) {
+  // Text-to-video only available via direct Kling
+  const token = getKlingAuth();
+  const body = {
+    model_name: options.model || "kling-v2-1",
+    prompt,
+    cfg_scale: 0.5,
+    mode: options.mode || "std",
+    aspect_ratio: options.aspectRatio || "16:9",
+    duration: options.duration || "5",
+  };
+
+  const res = await fetch(`${KLING_BASE}/v1/videos/text2video`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`Kling API error (${res.status}): ${errText}`);
+  }
+
+  const data = await res.json();
+  const taskId = data?.data?.task_id;
+  if (!taskId) throw new Error("Kling did not return a task_id");
+
+  const videoUrl = await pollKlingTask(taskId, token);
+  return { videoUrl };
 }
