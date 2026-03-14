@@ -46,14 +46,15 @@ async function generateWithFal(imageUrl, prompt, options = {}) {
   if (!requestId) throw new Error("fal.ai did not return a request_id");
 
   console.log("fal.ai job submitted:", requestId);
+  console.log("fal.ai status_url:", job.status_url);
+  console.log("fal.ai response_url:", job.response_url);
 
-  // Step 2: Poll for completion
-  return await pollFalJob(requestId, falKey);
+  // Step 2: Poll for completion using URLs from submit response
+  return await pollFalJob(job.status_url, job.response_url, falKey);
 }
 
-async function pollFalJob(requestId, falKey, maxAttempts = 60) {
+async function pollFalJob(statusUrl, responseUrl, falKey, maxAttempts = 60) {
   const delay = (ms) => new Promise((r) => setTimeout(r, ms));
-  const statusUrl = `https://queue.fal.run/${FAL_ENDPOINT}/requests/${requestId}/status`;
 
   for (let i = 0; i < maxAttempts; i++) {
     await delay(10000); // poll every 10s — videos take 3-6 min
@@ -71,11 +72,10 @@ async function pollFalJob(requestId, falKey, maxAttempts = 60) {
     console.log(`fal.ai poll ${i + 1}: status=${data.status}`);
 
     if (data.status === "COMPLETED") {
-      // Step 3: Get result
-      const resultRes = await fetch(
-        `https://queue.fal.run/${FAL_ENDPOINT}/requests/${requestId}/response`,
-        { headers: { Authorization: `Key ${falKey}` } }
-      );
+      // Step 3: Get result using response URL from submit
+      const resultRes = await fetch(responseUrl, {
+        headers: { Authorization: `Key ${falKey}` },
+      });
       if (!resultRes.ok) {
         throw new Error(`fal.ai result fetch failed (${resultRes.status})`);
       }
