@@ -425,6 +425,11 @@ export default function PipelinePage({ characters }) {
                       <img src={currentPipelineItem.imageUrl} alt="Generated content" className="w-full" />
                     </div>
                   )}
+                  {currentPipelineItem?.videoUrl && (
+                    <div className="rounded-lg overflow-hidden border border-[#2a2a3a] mt-3">
+                      <video src={currentPipelineItem.videoUrl} controls className="w-full" />
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -460,6 +465,11 @@ export default function PipelinePage({ characters }) {
                     {currentPipelineItem.imageUrl && (
                       <div className="rounded-lg overflow-hidden border border-[#2a2a3a]">
                         <img src={currentPipelineItem.imageUrl} alt="Content" className="w-full" />
+                      </div>
+                    )}
+                    {currentPipelineItem.videoUrl && (
+                      <div className="rounded-lg overflow-hidden border border-[#2a2a3a] mt-2">
+                        <video src={currentPipelineItem.videoUrl} controls className="w-full" />
                       </div>
                     )}
                     {currentPipelineItem.caption && (
@@ -561,6 +571,11 @@ export default function PipelinePage({ characters }) {
                         {item.imageUrl && (
                           <div className="mb-3 rounded-lg overflow-hidden border border-[#2a2a3a]">
                             <img src={item.imageUrl} alt="" className="w-full max-h-[200px] object-cover" />
+                          </div>
+                        )}
+                        {item.videoUrl && (
+                          <div className="mb-3 rounded-lg overflow-hidden border border-[#2a2a3a]">
+                            <video src={item.videoUrl} controls className="w-full max-h-[200px]" />
                           </div>
                         )}
                         {item.caption && (
