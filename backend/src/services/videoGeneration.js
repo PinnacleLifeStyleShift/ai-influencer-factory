@@ -9,7 +9,7 @@
  */
 
 import crypto from "crypto";
-import { ProviderError, getDefaultGate } from "./generationGate.js";
+import { ProviderError } from "./generationGate.js";
 
 // ---------------------------------------------------------------------------
 // fal.ai (Primary) — Kling image-to-video via fal queue API
@@ -259,14 +259,9 @@ export const videoAdapters = {
   },
 };
 
-/** Image-to-video with the selected, approved provider only. */
-export async function generateVideoFromImage(imageUrl, prompt = "", options = {}, { idempotencyKey } = {}) {
-  const result = await getDefaultGate().run("video", { imageUrl, prompt, options, idempotencyKey });
-  return { videoUrl: result.videoUrl };
-}
-
-/** Text-to-video with the selected, approved provider only. */
-export async function generateVideoFromText(prompt, options = {}, { idempotencyKey } = {}) {
-  const result = await getDefaultGate().run("video", { imageUrl: null, prompt, options, idempotencyKey });
+/** Video (image-to-video when imageUrl is given) through the given gate. */
+export async function generateVideo(gate, { imageUrl = null, prompt = "", options = {} }, { idempotencyKey, requestHash } = {}) {
+  if (!gate) throw new Error("generateVideo requires a generation gate");
+  const result = await gate.run("video", { imageUrl, prompt, options }, { idempotencyKey, requestHash });
   return { videoUrl: result.videoUrl };
 }

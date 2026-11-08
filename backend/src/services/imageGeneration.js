@@ -11,7 +11,7 @@
  * is the route recovered from the March 2026 source. Its current availability,
  * API entitlement, pricing and commercial-use terms are UNVERIFIED.
  */
-import { ProviderError, getDefaultGate } from "./generationGate.js";
+import { ProviderError } from "./generationGate.js";
 
 /**
  * Builds a prompt string from character data for image generation.
@@ -266,10 +266,11 @@ export const imageAdapters = {
 };
 
 /**
- * Generate one image with the selected, approved provider only.
- * Returns the image URL (unchanged contract for existing routes).
+ * Generate one image through the given generation gate (selected, approved
+ * provider only). The gate is always passed in explicitly by the caller.
  */
-export async function generateImage(prompt, options = {}, { idempotencyKey } = {}) {
-  const result = await getDefaultGate().run("image", { prompt, options, idempotencyKey });
+export async function generateImage(gate, prompt, options = {}, { idempotencyKey, requestHash } = {}) {
+  if (!gate) throw new Error("generateImage requires a generation gate");
+  const result = await gate.run("image", { prompt, options }, { idempotencyKey, requestHash });
   return result.imageUrl;
 }

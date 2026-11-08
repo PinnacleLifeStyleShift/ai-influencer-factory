@@ -67,6 +67,14 @@ model Content {
   likes           Int      @default(0)
   notes           String?
 
+  // Set only when created from an approved pipeline revision. Unique so the
+  // same approved snapshot can never be scheduled twice.
+  scheduleKey     String?  @unique @map("schedule_key")
+  approvedHash    String?  @map("approved_hash")
+  mediaType       String?  @map("media_type") // image | video
+  imageUrl        String?  @map("image_url")
+  videoUrl        String?  @map("video_url")
+
   characterId     String   @map("character_id")
   character       Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
 
@@ -129,6 +137,7 @@ model Trend {
   hashtags      String[] @default([])
   trendScore    Float    @default(0) @map("trend_score")
   source        String?  // URL or reference
+  provenance    String   @default("unknown") // simulated_fixture | manual | verified_source
   status        String   @default("new") // new, scripted, used, expired
 
   scripts       Script[]
@@ -193,8 +202,41 @@ model PipelineItem {
   approvedAt    DateTime? @map("approved_at")
   rejectedAt    DateTime? @map("rejected_at")
 
+  // Exact-version approval: every publish-relevant change bumps revision and
+  // clears approval. approvedHash is the snapshot hash the reviewer approved.
+  revision          Int     @default(1)
+  approvedRevision  Int?    @map("approved_revision")
+  approvedHash      String? @map("approved_hash")
+  approvedBy        String? @map("approved_by")
+  // Durable key of an unfinished generation workflow, reused on retry.
+  activeWorkflowKey String? @map("active_workflow_key")
+
   createdAt     DateTime  @default(now()) @map("created_at")
   updatedAt     DateTime  @updatedAt @map("updated_at")
 
   @@map("pipeline_items")
+}
+
+// ─── SPENDING LEDGER ─────────────────────────────────────────
+// Durable reservations for paid provider calls. Amounts in integer micro-USD.
+
+model GenerationReservation {
+  id             String   @id @default(cuid())
+  provider       String
+  model          String
+  amountMicros   BigInt   @map("amount_micros")
+  actualMicros   BigInt?  @map("actual_micros")
+  state          String   // reserved | settled | released | outcome_unknown
+  day            String   // YYYY-MM-DD (UTC)
+  month          String   // YYYY-MM (UTC)
+  idempotencyKey String?  @unique @map("idempotency_key")
+  requestHash    String?  @map("request_hash")
+  result         Json?
+
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@index([day])
+  @@index([month])
+  @@map("generation_reservations")
 }

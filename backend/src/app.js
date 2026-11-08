@@ -13,7 +13,7 @@ import { buildCorsOptions } from "./lib/cors.js";
 import { sendError, ApiError } from "./lib/errors.js";
 import { requireOwnerToken } from "./middleware/auth.js";
 import { rateLimit } from "./middleware/rateLimit.js";
-import { initDefaultGate } from "./services/generationGate.js";
+import { createGenerationGate, selectLedger } from "./services/generationGate.js";
 import { imageAdapters } from "./services/imageGeneration.js";
 import { videoAdapters } from "./services/videoGeneration.js";
 
@@ -22,8 +22,14 @@ import { videoAdapters } from "./services/videoGeneration.js";
  * a fake Prisma client and no network access.
  */
 export function createApp({ prisma, env = process.env, gate, logRequests = true } = {}) {
+  // One gate per app, injected into every route via req.generationGate.
   const generationGate =
-    gate || initDefaultGate({ env, adapters: { image: imageAdapters, video: videoAdapters } });
+    gate ||
+    createGenerationGate({
+      env,
+      ledger: selectLedger(env, prisma),
+      adapters: { image: imageAdapters, video: videoAdapters },
+    });
 
   const app = express();
   app.disable("x-powered-by");

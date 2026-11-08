@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createGenerationGate, ProviderError } from "../src/services/generationGate.js";
+import { createGenerationGate, ProviderError, selectLedger } from "../src/services/generationGate.js";
 import { createMemoryLedger, usdToMicros } from "../src/services/spendLedger.js";
 import { imageAdapters } from "../src/services/imageGeneration.js";
 import { videoAdapters } from "../src/services/videoGeneration.js";
@@ -91,8 +91,8 @@ test("fully configured run succeeds and settles the reservation", async () => {
   const result = await gate.run("image", { prompt: "p" });
   assert.equal(result.imageUrl, "https://example.test/fixture.png");
   assert.equal(result.provider, "higgsfield");
-  assert.equal(ledger.get(result.reservationId).state, "settled");
-  assert.equal(ledger.totals().dayMicros, 1_000_000);
+  assert.equal((await ledger.get(result.reservationId)).state, "settled");
+  assert.equal((await ledger.totals()).dayMicros, 1_000_000);
   assert.deepEqual(calls, { higgs: 1, leonardo: 0 });
 });
 
@@ -100,13 +100,15 @@ test("provider failure never falls back and keeps money reserved when outcome is
   const { adapters, calls } = mockAdapters({ higgs: { generate: async () => { throw new Error("socket hang up"); } } });
   const ledger = createMemoryLedger({ durable: true });
   const gate = createGenerationGate({ env: { ...FULL_ENV, APPROVED_PROVIDER_MODELS: "higgsfield:soul,leonardo:phoenix" }, ledger, adapters, log: quietLog });
+  let reservationId;
   await assert.rejects(gate.run("image", { prompt: "p" }), (err) => {
     assert.equal(err.code, "OUTCOME_UNKNOWN");
-    assert.equal(ledger.get(err.details.reservationId).state, "outcome_unknown");
+    reservationId = err.details.reservationId;
     return true;
   });
+  assert.equal((await ledger.get(reservationId)).state, "outcome_unknown");
   assert.equal(calls.leonardo, 0, "no automatic fallback");
-  assert.equal(ledger.totals().dayMicros, 1_000_000, "unknown outcome still counts against the cap");
+  assert.equal((await ledger.totals()).dayMicros, 1_000_000, "unknown outcome still counts against the cap");
 });
 
 test("a request that never left the server releases its reservation", async () => {
@@ -114,7 +116,7 @@ test("a request that never left the server releases its reservation", async () =
   const ledger = createMemoryLedger({ durable: true });
   const gate = createGenerationGate({ env: FULL_ENV, ledger, adapters });
   await expectCode(gate.run("image", { prompt: "p" }), "PROVIDER_UNAVAILABLE");
-  assert.equal(ledger.totals().dayMicros, 0);
+  assert.equal((await ledger.totals()).dayMicros, 0);
 });
 
 test("caps hold under concurrent requests", async () => {
@@ -143,12 +145,103 @@ test("monthly cap is enforced across days", async () => {
   await expectCode(gate.run("image", { prompt: "p" }), "BUDGET_EXCEEDED");
 });
 
-test("duplicate idempotency key does not create a second paid job", async () => {
+test("settled idempotency key replays the stored result without a second paid call", async () => {
+  const { adapters, calls } = mockAdapters();
+  const ledger = createMemoryLedger({ durable: true });
+  const gate = createGenerationGate({ env: FULL_ENV, ledger, adapters });
+  const first = await gate.run("image", { prompt: "p" }, { idempotencyKey: "k1", requestHash: "h1" });
+  const again = await gate.run("image", { prompt: "p" }, { idempotencyKey: "k1", requestHash: "h1" });
+  assert.equal(again.imageUrl, first.imageUrl);
+  assert.equal(again.replayed, true);
+  assert.equal(again.estimatedCostMicros, 0);
+  assert.equal(calls.higgs, 1);
+  assert.equal((await ledger.totals()).dayMicros, 1_000_000);
+});
+
+test("idempotency key reused for a different request is rejected", async () => {
   const { adapters, calls } = mockAdapters();
   const gate = createGenerationGate({ env: FULL_ENV, ledger: createMemoryLedger({ durable: true }), adapters });
-  await gate.run("image", { prompt: "p", idempotencyKey: "k1" });
-  await expectCode(gate.run("image", { prompt: "p", idempotencyKey: "k1" }), "DUPLICATE_REQUEST");
+  await gate.run("image", { prompt: "p" }, { idempotencyKey: "k1", requestHash: "h1" });
+  await expectCode(gate.run("image", { prompt: "p" }, { idempotencyKey: "k1", requestHash: "h2" }), "IDEMPOTENCY_KEY_REUSED");
   assert.equal(calls.higgs, 1);
+});
+
+test("in-flight or unknown-outcome key blocks a retry", async () => {
+  let release;
+  let started = 0;
+  const { adapters } = mockAdapters({
+    higgs: { generate: () => { started++; return new Promise((r) => { release = () => r({ imageUrl: "x" }); }); } },
+  });
+  const gate = createGenerationGate({ env: FULL_ENV, ledger: createMemoryLedger({ durable: true }), adapters });
+  const first = gate.run("image", {}, { idempotencyKey: "k1", requestHash: "h" });
+  await new Promise((r) => setImmediate(r));
+  await expectCode(gate.run("image", {}, { idempotencyKey: "k1", requestHash: "h" }), "DUPLICATE_IN_PROGRESS");
+  release();
+  await first;
+  assert.equal(started, 1, "only one provider call started");
+});
+
+test("released (never sent) key may be retried", async () => {
+  let fail = true;
+  let attempts = 0;
+  const { adapters } = mockAdapters({
+    higgs: { generate: async () => { attempts++; if (fail) throw new ProviderError("missing key", { submitted: false }); return { imageUrl: "ok" }; } },
+  });
+  const gate = createGenerationGate({ env: FULL_ENV, ledger: createMemoryLedger({ durable: true }), adapters });
+  await expectCode(gate.run("image", {}, { idempotencyKey: "k1", requestHash: "h" }), "PROVIDER_UNAVAILABLE");
+  fail = false;
+  const r = await gate.run("image", {}, { idempotencyKey: "k1", requestHash: "h" });
+  assert.equal(r.imageUrl, "ok");
+  assert.equal(attempts, 2);
+});
+
+test("workflow is preflighted as a whole: a blocked video step prevents the image call", async () => {
+  const { adapters, calls } = mockAdapters();
+  adapters.video = { "fal:kling-v2.1-i2v": { generate: async () => ({ videoUrl: "v" }) } };
+  const gate = createGenerationGate({ env: FULL_ENV, ledger: createMemoryLedger({ durable: true }), adapters });
+  await expectCode(gate.runWorkflow([{ kind: "image", input: {} }, { kind: "video", input: {} }]), "PROVIDER_NOT_SELECTED");
+  const env2 = { ...FULL_ENV, VIDEO_PROVIDER: "fal:kling-v2.1-i2v" };
+  const gate2 = createGenerationGate({ env: env2, ledger: createMemoryLedger({ durable: true }), adapters });
+  await expectCode(gate2.runWorkflow([{ kind: "image", input: {} }, { kind: "video", input: {} }]), "PROVIDER_NOT_APPROVED");
+  assert.equal(calls.higgs, 0);
+});
+
+test("workflow reserves its total cost up front", async () => {
+  const { adapters, calls } = mockAdapters();
+  let videoCalls = 0;
+  adapters.video = { "fal:kling-v2.1-i2v": { generate: async () => { videoCalls++; return { videoUrl: "v" }; } } };
+  const env = {
+    ...FULL_ENV,
+    VIDEO_PROVIDER: "fal:kling-v2.1-i2v",
+    APPROVED_PROVIDER_MODELS: "higgsfield:soul,fal:kling-v2.1-i2v",
+    PROVIDER_PRICES_USD: JSON.stringify({ "higgsfield:soul": "1.00", "fal:kling-v2.1-i2v": "2.50" }),
+    SPEND_CAP_PER_JOB_USD: "3",
+    SPEND_CAP_DAILY_USD: "3", // image (1.00) + video (2.50) = 3.50 > 3
+  };
+  const gate = createGenerationGate({ env, ledger: createMemoryLedger({ durable: true }), adapters });
+  await expectCode(gate.runWorkflow([{ kind: "image", input: {} }, { kind: "video", input: {} }]), "BUDGET_EXCEEDED");
+  assert.equal(calls.higgs, 0, "image not bought when the full workflow cannot be afforded");
+  assert.equal(videoCalls, 0);
+});
+
+test("workflow persists each stage and frees unstarted reservations on failure", async () => {
+  const { adapters } = mockAdapters();
+  adapters.video = { "fal:kling-v2.1-i2v": { generate: async () => { throw new Error("timeout"); } } };
+  const env = {
+    ...FULL_ENV,
+    VIDEO_PROVIDER: "fal:kling-v2.1-i2v",
+    APPROVED_PROVIDER_MODELS: "higgsfield:soul,fal:kling-v2.1-i2v",
+    PROVIDER_PRICES_USD: JSON.stringify({ "higgsfield:soul": "1.00", "fal:kling-v2.1-i2v": "1.00" }),
+  };
+  const ledger = createMemoryLedger({ durable: true });
+  const gate = createGenerationGate({ env, ledger, adapters, log: quietLog });
+  const persisted = [];
+  await expectCode(gate.runWorkflow([
+    { kind: "image", input: {}, onResult: async (r) => persisted.push(r.imageUrl) },
+    { kind: "video", input: (prev) => ({ imageUrl: prev[0].imageUrl }), onResult: async (r) => persisted.push(r.videoUrl) },
+  ]), "OUTCOME_UNKNOWN");
+  assert.deepEqual(persisted, ["https://example.test/fixture.png"], "image stage persisted before the video failure");
+  assert.equal((await ledger.totals()).dayMicros, 2_000_000, "settled image + unknown video both counted");
 });
 
 test("real Higgsfield adapter against a mocked network: one request, no fallback, secrets not logged", async () => {
@@ -184,4 +277,10 @@ test("real Higgsfield adapter against a mocked network: one request, no fallback
     process.env = prevEnv;
     net.restore();
   }
+});
+
+test("default ledger selection is the non-durable in-memory ledger", () => {
+  assert.equal(selectLedger({}, null).durable, false);
+  assert.equal(selectLedger({ SPEND_LEDGER: "memory" }, null).durable, false);
+  assert.throws(() => selectLedger({ SPEND_LEDGER: "postgres" }, null));
 });

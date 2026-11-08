@@ -2,20 +2,31 @@ import { Router } from "express";
 import { ApiError, sendError } from "../lib/errors.js";
 
 /**
- * Statuses a client may set directly. "published" is reserved for a future
- * publisher that records platform-confirmed evidence (spec F5); no publisher
- * exists, so the API refuses to mark anything as published.
+ * Generic content routes are a planning calendar. They can never mark content
+ * scheduled or published:
+ *  - "scheduled" content is created only by POST /api/pipeline/:id/schedule
+ *    from an approved, unchanged pipeline revision (it carries scheduleKey);
+ *  - "published" needs a platform-confirmed publisher, which does not exist.
+ * For content created from an approved revision, publish-relevant fields and
+ * status are locked here; changes go through the pipeline and need re-approval.
  */
-const CLIENT_SETTABLE_STATUSES = new Set(["draft", "scheduled"]);
+const LOCKED_FIELDS = ["title", "contentType", "platform", "caption", "hashtags", "motionPrompt"];
 
-function assertClientStatus(status) {
-  if (status === undefined) return;
+function assertStatusChange(status, existing) {
+  if (status === undefined || (existing && status === existing.status)) return;
   if (status === "published") {
     throw new ApiError("PUBLISHING_NOT_ENABLED", 409,
       "Publishing is not enabled. Content cannot be marked published without platform confirmation.");
   }
-  if (!CLIENT_SETTABLE_STATUSES.has(status)) {
+  if (status === "scheduled") {
+    throw new ApiError("APPROVAL_REQUIRED", 409,
+      "Content can only be scheduled from an approved pipeline revision (POST /api/pipeline/:id/schedule)");
+  }
+  if (status !== "draft") {
     throw new ApiError("VALIDATION_FAILED", 400, `Unsupported status: ${String(status).slice(0, 40)}`);
+  }
+  if (existing?.scheduleKey) {
+    throw new ApiError("APPROVAL_LOCKED", 409, "Status of approved, scheduled content cannot be changed here");
   }
 }
 const router = Router();
@@ -69,14 +80,14 @@ router.get("/:id", async (req, res) => {
 // POST /api/content — create
 router.post("/", async (req, res) => {
   try {
-    assertClientStatus(req.body.status);
+    assertStatusChange(req.body.status, null);
     const item = await req.prisma.content.create({
       data: {
         title: req.body.title,
         contentType: req.body.content_type || req.body.contentType,
         platform: req.body.platform,
         scheduledDate: req.body.scheduled_date || req.body.scheduledDate,
-        status: req.body.status || "scheduled",
+        status: "draft",
         caption: req.body.caption,
         hashtags: req.body.hashtags,
         motionPrompt: req.body.motion_prompt || req.body.motionPrompt,
@@ -96,7 +107,9 @@ router.post("/", async (req, res) => {
 // PUT /api/content/:id — update
 router.put("/:id", async (req, res) => {
   try {
-    assertClientStatus(req.body.status);
+    const existing = await req.prisma.content.findUnique({ where: { id: req.params.id } });
+    if (!existing) return sendError(res, new ApiError("NOT_FOUND", 404, "Content not found"));
+    assertStatusChange(req.body.status, existing);
     const data = {};
     const fields = {
       title: "title", content_type: "contentType", contentType: "contentType",
@@ -107,6 +120,14 @@ router.put("/:id", async (req, res) => {
     for (const [bodyKey, prismaKey] of Object.entries(fields)) {
       if (req.body[bodyKey] !== undefined) data[prismaKey] = req.body[bodyKey];
     }
+    if (existing.scheduleKey) {
+      const locked = LOCKED_FIELDS.filter((f) => data[f] !== undefined && (data[f] ?? null) !== (existing[f] ?? null));
+      if (locked.length) {
+        throw new ApiError("APPROVAL_LOCKED", 409,
+          `${locked.join(", ")} of approved content cannot be edited here; revise the pipeline item and re-approve`);
+      }
+    }
+    if (data.status === existing.status) delete data.status;
     if (req.body.views !== undefined) data.views = parseInt(req.body.views) || 0;
     if (req.body.likes !== undefined) data.likes = parseInt(req.body.likes) || 0;
 

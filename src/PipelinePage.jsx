@@ -7,6 +7,27 @@ import {
 } from "lucide-react";
 
 // ─── STYLE HELPERS (matching App.jsx theme) ──────────────────
+const DESTINATIONS = ["TikTok", "Instagram", "YouTube"];
+
+// One Idempotency-Key per user action, kept in sessionStorage until it
+// succeeds so a retry (even after a reload) reuses it instead of re-buying.
+const GEN_KEY_PREFIX = "aif.genKey.";
+function generationKeyFor(itemId, type) {
+  const k = `${GEN_KEY_PREFIX}${itemId}.${type}`;
+  try {
+    const existing = sessionStorage.getItem(k);
+    if (existing) return existing;
+    const created = api.newIdempotencyKey();
+    sessionStorage.setItem(k, created);
+    return created;
+  } catch {
+    return api.newIdempotencyKey();
+  }
+}
+function clearGenerationKey(itemId, type) {
+  try { sessionStorage.removeItem(`${GEN_KEY_PREFIX}${itemId}.${type}`); } catch { /* unavailable */ }
+}
+
 const css = {
   card: "bg-[#13131a] border border-[#2a2a3a] rounded-xl",
   input: "w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-[#C8FF00] transition-colors",
@@ -42,6 +63,7 @@ export default function PipelinePage({ characters }) {
   const [stageFilter, setStageFilter] = useState("all");
   const [selectedItem, setSelectedItem] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState("");
 
   // Wizard state
   const [selectedCharacter, setSelectedCharacter] = useState("");
@@ -120,14 +142,18 @@ export default function PipelinePage({ characters }) {
     if (!currentPipelineItem) return;
     setBusy(true);
     try {
-      const result = await api.pipeline.generateContent({
-        pipelineItemId: currentPipelineItem.id,
-        type: "image",
-      });
+      setActionError("");
+      const result = await api.pipeline.generateContent(
+        { pipelineItemId: currentPipelineItem.id, type: "image" },
+        { idempotencyKey: generationKeyFor(currentPipelineItem.id, "image") }
+      );
+      clearGenerationKey(currentPipelineItem.id, "image");
       setCurrentPipelineItem(result.pipelineItem);
       setActiveStep("caption");
       await load();
     } catch (err) {
+      // Key is kept: retrying reuses it, so a paid request is never bought twice.
+      setActionError(err.message);
       console.error("Content gen error:", err);
     } finally {
       setBusy(false);
@@ -152,13 +178,16 @@ export default function PipelinePage({ characters }) {
     }
   };
 
-  const approveItem = async (id) => {
+  // Approves exactly the revision shown on screen (server checks revision + snapshot hash).
+  const approveItem = async (item) => {
     setBusy(true);
     try {
-      await api.pipeline.approve(id);
+      setActionError("");
+      await api.pipeline.approve(item.id, { revision: item.revision, snapshotHash: item.snapshotHash });
       await load();
       setSelectedItem(null);
     } catch (err) {
+      setActionError(err.message);
       console.error("Approve error:", err);
     } finally {
       setBusy(false);
@@ -182,11 +211,26 @@ export default function PipelinePage({ characters }) {
     setBusy(true);
     try {
       const today = new Date().toISOString().split("T")[0];
-      await api.pipeline.schedule(id, { scheduledDate: today, platform: discoverPlatform });
+      // Destination comes from the approved revision on the server.
+      await api.pipeline.schedule(id, { scheduledDate: today });
       await load();
       setSelectedItem(null);
     } catch (err) {
       console.error("Schedule error:", err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const setDestination = async (item, platform) => {
+    setBusy(true);
+    try {
+      setActionError("");
+      const result = await api.pipeline.update(item.id, { platform: platform || null, revision: item.revision });
+      setCurrentPipelineItem(result.pipelineItem);
+      await load();
+    } catch (err) {
+      setActionError(err.message);
     } finally {
       setBusy(false);
     }
@@ -338,6 +382,9 @@ export default function PipelinePage({ characters }) {
                         </div>
                         <div className="flex gap-1 mt-2">
                           <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400">{t.platform}</span>
+                          {t.provenance === "simulated_fixture" && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300">Simulated</span>
+                          )}
                           {(t.hashtags || []).slice(0, 3).map((h, i) => (
                             <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-500">{h}</span>
                           ))}
@@ -481,8 +528,19 @@ export default function PipelinePage({ characters }) {
                       </div>
                     )}
                   </div>
+                  <label className="block text-xs text-zinc-400 mb-1">Destination (part of what you approve)</label>
+                  <select className={`${css.input} mb-3`} value={currentPipelineItem.platform || ""} disabled={busy}
+                    onChange={(e) => setDestination(currentPipelineItem, e.target.value)}>
+                    <option value="">Choose destination…</option>
+                    {DESTINATIONS.map((d) => <option key={d} value={d}>{d}</option>)}
+                  </select>
+                  <div className="text-[10px] text-zinc-600 mb-3">
+                    Revision {currentPipelineItem.revision}. Changing media, caption or destination requires a new approval.
+                  </div>
+                  {actionError && <div className="text-xs text-red-400 mb-3">{actionError}</div>}
                   <div className="flex gap-3">
-                    <button onClick={() => approveItem(currentPipelineItem.id)} disabled={busy}
+                    <button onClick={() => approveItem(currentPipelineItem)}
+                      disabled={busy || !currentPipelineItem.platform || currentPipelineItem.stage !== "review"}
                       className="flex-1 bg-green-600 text-white font-semibold text-sm px-4 py-2 rounded-lg hover:bg-green-500 transition-colors">
                       <ThumbsUp size={14} className="inline mr-2" />Approve
                     </button>
@@ -587,12 +645,14 @@ export default function PipelinePage({ characters }) {
                           </div>
                         )}
                         <div className="flex gap-2">
-                          {(item.stage === "review" || item.stage === "content_generated" || item.stage === "draft") && (
-                            <>
-                              <button onClick={(e) => { e.stopPropagation(); approveItem(item.id); }}
+                          {item.stage === "review" && item.platform && (
+                              <button onClick={(e) => { e.stopPropagation(); approveItem(item); }}
                                 className="bg-green-600/80 text-white text-xs px-3 py-1.5 rounded-lg hover:bg-green-500 transition-colors">
                                 <ThumbsUp size={11} className="inline mr-1" />Approve
                               </button>
+                          )}
+                          {["review", "content_generated", "approved"].includes(item.stage) && (
+                            <>
                               <button onClick={(e) => { e.stopPropagation(); rejectItem(item.id); }}
                                 className="bg-red-600/30 text-red-300 text-xs px-3 py-1.5 rounded-lg hover:bg-red-600/50 transition-colors">
                                 <ThumbsDown size={11} className="inline mr-1" />Reject

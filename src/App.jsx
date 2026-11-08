@@ -507,7 +507,7 @@ function Characters({ characters, setCharacters }) {
 }
 
 // ─── CONTENT CALENDAR ─────────────────────────────────────────
-const EMPTY_CONTENT = { title:"",character_id:"",content_type:"",platform:"",scheduled_date:today(),status:"scheduled",caption:"",hashtags:"",motion_prompt:"",notes:"" };
+const EMPTY_CONTENT = { title:"",character_id:"",content_type:"",platform:"",scheduled_date:today(),status:"draft",caption:"",hashtags:"",motion_prompt:"",notes:"" };
 
 function ContentCalendar({ content, setContent, characters }) {
   const [month, setMonth] = useState(new Date());
@@ -631,7 +631,7 @@ function ContentCalendar({ content, setContent, characters }) {
               <div>
                 <label className={css.label}>Status</label>
                 <select className={css.input} value={f.status} onChange={e=>set("status",e.target.value)}>
-                  {["draft","scheduled"].map(s=><option key={s} value={s}>{s}</option>)}
+                  {(f.status==="scheduled"?["draft","scheduled"]:["draft"]).map(s=><option key={s} value={s}>{s}</option>)}
                 </select>
               </div>
             </div>

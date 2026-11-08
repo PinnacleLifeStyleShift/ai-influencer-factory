@@ -83,3 +83,25 @@ test("CORS allows only listed origins and ignores '*'", async () => {
     assert.equal(bad.headers.get("access-control-allow-origin"), null);
   } finally { await app.close(); }
 });
+
+test("CORS preflight allows the Idempotency-Key header for listed origins only", async () => {
+  const app = await startApp({ env: { OWNER_API_TOKEN: TOKEN, FRONTEND_URL: "https://app.example.test" } });
+  try {
+    const pre = await app.call("/api/pipeline/generate-content", {
+      method: "OPTIONS",
+      headers: {
+        Origin: "https://app.example.test",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "authorization,content-type,idempotency-key",
+      },
+    });
+    assert.ok(pre.status === 204 || pre.status === 200);
+    assert.match(pre.headers.get("access-control-allow-headers") || "", /Idempotency-Key/i);
+    assert.match(pre.headers.get("access-control-allow-methods") || "", /PATCH/);
+    const evil = await app.call("/api/pipeline/generate-content", {
+      method: "OPTIONS",
+      headers: { Origin: "https://evil.example", "Access-Control-Request-Method": "POST" },
+    });
+    assert.equal(evil.headers.get("access-control-allow-origin"), null);
+  } finally { await app.close(); }
+});
