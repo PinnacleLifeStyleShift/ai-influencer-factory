@@ -1,0 +1,115 @@
+name: Docker build
+
+# Builds both production images and smoke-tests them. Nothing is pushed or
+# deployed, and no secrets are used: the only token below is a synthetic
+# test value for a throwaway container.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      API_TOKEN: ci-smoke-token-0123456789abcdefghijklmn
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/Dockerfile
+          push: false
+          load: true
+          tags: aif-api:ci
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Frontend build fails without VITE_API_URL
+        run: |
+          if docker build --target build -t aif-web:no-url . > build.log 2>&1; then
+            echo "::error::Frontend image built without VITE_API_URL"; exit 1
+          fi
+          grep -q "VITE_API_URL build arg is required" build.log
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          load: true
+          tags: aif-web:ci
+          build-args: |
+            VITE_API_URL=http://127.0.0.1:4000
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
+      - name: Smoke test backend image (fresh database)
+        run: |
+          docker run -d --name api --network host \
+            -e DATABASE_URL -e PORT=4000 -e OWNER_API_TOKEN="$API_TOKEN" \
+            -e FRONTEND_URL=http://127.0.0.1:3000 aif-api:ci
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:4000/health && break; sleep 2; done
+          curl -fsS http://127.0.0.1:4000/health
+          docker logs api 2>&1 | grep -q "\[migrate\] Done."
+          # Authentication is enforced.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4000/api/characters)" = "401"
+          # Authenticated read and write work against the migrated schema.
+          curl -fsS -H "Authorization: Bearer $API_TOKEN" http://127.0.0.1:4000/api/characters
+          curl -fsS -X POST -H "Authorization: Bearer $API_TOKEN" -H "Content-Type: application/json" \
+            -d '{"name":"CI smoke"}' http://127.0.0.1:4000/api/characters | grep -q '"characterId":"INFL-001"'
+          # Paid generation is blocked by default.
+          curl -fsS -H "Authorization: Bearer $API_TOKEN" http://127.0.0.1:4000/api/system/generation-policy \
+            | grep -q '"liveCallsEnabled":false'
+
+      - name: Smoke test backend image (restart is a no-op migration)
+        run: |
+          docker restart api
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:4000/health && break; sleep 2; done
+          docker logs api 2>&1 | grep -q "No pending migrations"
+
+      - name: Smoke test frontend image
+        run: |
+          docker run -d --name web --network host -e PORT=3000 aif-web:ci
+          for i in $(seq 1 30); do curl -fsS -o /dev/null http://127.0.0.1:3000/ && break; sleep 1; done
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/)" = "200"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/characters)" = "200"  # SPA fallback
+          # The configured API URL is in the bundle; the old production fallback is not.
+          docker exec web sh -c 'grep -l "http://127.0.0.1:4000" dist/assets/*.js'
+          ! docker exec web sh -c 'grep -l "api-production-5a00" dist/assets/*.js'
+          # serve comes from the lockfile with the patched compression.
+          docker exec web sh -c 'node -p "require(\"./node_modules/compression/package.json\").version"' | grep -qx "1.8.2"
+
+      - name: Container logs
+        if: always()
+        run: |
+          docker logs api 2>&1 | tail -n 100 || true
+          docker logs web 2>&1 | tail -n 50 || true
