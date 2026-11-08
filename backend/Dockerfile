@@ -10,4 +10,6 @@ RUN npx prisma generate
 
 
 EXPOSE ${PORT:-4000}
-CMD sh -c "npx prisma db push --skip-generate && node src/server.js"
+# Apply committed migrations (verified baseline for pre-migration databases),
+# then start. No schema push at build or start.
+CMD ["npm", "start"]

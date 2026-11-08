@@ -43,6 +43,12 @@ run_pg "'${PG_BIN}/pg_ctl' -D '${WORK}/data' -w -l '${WORK}/log' \
 export TEST_DATABASE_URL="postgresql://aif_test@127.0.0.1:${PORT}/postgres?schema=aif_test"
 export DATABASE_URL="${TEST_DATABASE_URL}"
 
-npx prisma db push --skip-generate --accept-data-loss >/dev/null
+# Build the test database from the committed migrations (not db push), then
+# fail if the migrations do not produce exactly prisma/schema.prisma.
+npx prisma migrate deploy >/dev/null
+if ! npx prisma migrate diff --from-url "${DATABASE_URL}" --to-schema-datamodel prisma/schema.prisma --exit-code >/dev/null; then
+  echo "Schema drift: committed migrations do not match prisma/schema.prisma (create a migration)." >&2
+  exit 1
+fi
 
 "$@"
