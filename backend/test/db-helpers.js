@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+import { createPrismaClient } from "../src/lib/prisma.js";
 
 /**
  * Integration tests run only against the disposable database created by
@@ -23,7 +23,7 @@ export const skipReason = !TEST_DB_URL
     : false;
 
 export function newClient() {
-  return new PrismaClient({ datasources: { db: { url: TEST_DB_URL } } });
+  return createPrismaClient(TEST_DB_URL);
 }
 
 const TABLES = [

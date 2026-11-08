@@ -1,5 +1,9 @@
 # Database migrations
 
+Prisma 7: the connection URL comes from `DATABASE_URL` via `prisma.config.mjs` (it is no longer in
+`schema.prisma`, and `.env` files are not loaded automatically). The runtime client uses the
+`@prisma/adapter-pg` driver adapter (`src/lib/prisma.js`).
+
 Schema changes ship as committed migrations in `prisma/migrations/`. `prisma db push`
 is no longer used at build time, at startup, or in tests.
 

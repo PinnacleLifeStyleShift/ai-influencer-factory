@@ -46,7 +46,7 @@ export DATABASE_URL="${TEST_DATABASE_URL}"
 # Build the test database from the committed migrations (not db push), then
 # fail if the migrations do not produce exactly prisma/schema.prisma.
 npx prisma migrate deploy >/dev/null
-if ! npx prisma migrate diff --from-url "${DATABASE_URL}" --to-schema-datamodel prisma/schema.prisma --exit-code >/dev/null; then
+if ! npx prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code >/dev/null; then
   echo "Schema drift: committed migrations do not match prisma/schema.prisma (create a migration)." >&2
   exit 1
 fi

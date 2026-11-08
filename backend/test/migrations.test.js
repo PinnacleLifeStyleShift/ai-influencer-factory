@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { PrismaClient } from "@prisma/client";
+import { createPrismaClient } from "../src/lib/prisma.js";
 import { skipReason, TEST_DB_URL } from "./db-helpers.js";
 
 /**
@@ -21,11 +21,11 @@ function run(cmd, args, schema) {
 }
 const migrateDeploy = (schema) => run("node", ["scripts/migrate-deploy.mjs"], schema);
 const legacyPush = (schema) => {
-  const r = run("npx", ["prisma", "db", "push", "--skip-generate", "--schema", "prisma/baseline/277d2d3.schema.prisma"], schema);
+  const r = run("npx", ["prisma", "db", "push", "--schema", "prisma/baseline/277d2d3.schema.prisma"], schema);
   assert.equal(r.status, 0, r.stderr);
 };
 async function withClient(schema, fn) {
-  const c = new PrismaClient({ datasources: { db: { url: urlFor(schema) } } });
+  const c = createPrismaClient(urlFor(schema));
   try { return await fn(c); } finally { await c.$disconnect(); }
 }
 const columns = (c, table) => c.$queryRawUnsafe(
@@ -35,7 +35,7 @@ const appliedMigrations = (c) => c.$queryRawUnsafe(
   `SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NOT NULL ORDER BY migration_name`
 ).then((rows) => rows.map((r) => r.migration_name));
 const schemaMatches = (schema) =>
-  run("npx", ["prisma", "migrate", "diff", "--from-url", urlFor(schema), "--to-schema-datamodel", "prisma/schema.prisma", "--exit-code"], schema).status === 0;
+  run("npx", ["prisma", "migrate", "diff", "--from-config-datasource", "--to-schema", "prisma/schema.prisma", "--exit-code"], schema).status === 0;
 
 test("fresh database: both migrations apply and match schema.prisma", opts, async () => {
   const r = migrateDeploy("mig_fresh");

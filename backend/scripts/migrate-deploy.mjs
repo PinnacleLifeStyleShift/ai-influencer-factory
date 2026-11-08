@@ -15,7 +15,7 @@
  * Exit codes: 0 ok, 1 refused or failed.
  */
 import { spawnSync } from "node:child_process";
-import { PrismaClient } from "@prisma/client";
+import { createPrismaClient } from "../src/lib/prisma.js";
 
 const BASELINE_MIGRATION = "20260321000000_init";
 const BASELINE_SCHEMA = "prisma/baseline/277d2d3.schema.prisma";
@@ -30,7 +30,7 @@ function prisma(args, { allowExit = [0] } = {}) {
 }
 
 async function inspect() {
-  const client = new PrismaClient();
+  const client = createPrismaClient();
   try {
     const [row] = await client.$queryRaw`
       SELECT to_regclass('_prisma_migrations') IS NOT NULL AS has_history,
@@ -49,7 +49,7 @@ async function main() {
     console.log("[migrate] Existing database without migration history; verifying it matches the baseline schema...");
     // --exit-code: 0 = no difference, 2 = differences, 1 = error.
     const diff = prisma(
-      ["migrate", "diff", "--from-url", process.env.DATABASE_URL, "--to-schema-datamodel", BASELINE_SCHEMA, "--exit-code"],
+      ["migrate", "diff", "--from-config-datasource", "--to-schema", BASELINE_SCHEMA, "--exit-code"],
       { allowExit: [0, 2] }
     );
     if (diff.status !== 0) {

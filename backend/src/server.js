@@ -1,8 +1,8 @@
-import { PrismaClient } from "@prisma/client";
+import { createPrismaClient } from "./lib/prisma.js";
 import { createApp } from "./app.js";
 import { MIN_TOKEN_LENGTH } from "./middleware/auth.js";
 
-const prisma = new PrismaClient();
+const prisma = createPrismaClient();
 const PORT = parseInt(process.env.PORT) || 4000;
 
 const app = createApp({ prisma });

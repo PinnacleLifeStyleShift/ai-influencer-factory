@@ -1,5 +1,5 @@
-import { PrismaClient } from "@prisma/client";
-const prisma = new PrismaClient();
+import { createPrismaClient } from "../src/lib/prisma.js";
+const prisma = createPrismaClient();
 
 async function main() {
   // Clear existing data
