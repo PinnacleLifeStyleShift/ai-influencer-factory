@@ -11,7 +11,8 @@
     "db:seed": "node prisma/seed.js",
     "db:push": "npx prisma db push",
     "db:studio": "npx prisma studio",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "@prisma/client": "^6.5.0",

@@ -1,9 +1,15 @@
 /**
  * Video Generation Service
- * fal.ai (primary — Kling via fal) with direct Kling API (fallback).
+ *
+ * Provider adapters only. Every call goes through the generation gate
+ * (services/generationGate.js). No video provider is selected by default:
+ * the recovered fal.ai/Kling adapters are retained as optional, unapproved
+ * options, and there is no automatic fallback between them. A Higgsfield
+ * video route has not been verified and is not implemented here.
  */
 
 import crypto from "crypto";
+import { ProviderError, getDefaultGate } from "./generationGate.js";
 
 // ---------------------------------------------------------------------------
 // fal.ai (Primary) — Kling image-to-video via fal queue API
@@ -13,7 +19,7 @@ const FAL_ENDPOINT = "fal-ai/kling-video/v2.1/standard/image-to-video";
 
 async function generateWithFal(imageUrl, prompt, options = {}) {
   const falKey = process.env.FAL_KEY;
-  if (!falKey) throw new Error("FAL_KEY not configured");
+  if (!falKey) throw new ProviderError("FAL_KEY not configured", { submitted: false });
 
   const body = {
     prompt: prompt || "Subtle natural movement, gentle motion, cinematic lighting",
@@ -23,8 +29,6 @@ async function generateWithFal(imageUrl, prompt, options = {}) {
     negative_prompt: "blur, distort, low quality, jitter",
     cfg_scale: 0.5,
   };
-
-  console.log("fal.ai submit:", JSON.stringify(body, null, 2));
 
   // Step 1: Submit job
   const submitRes = await fetch(`https://queue.fal.run/${FAL_ENDPOINT}`, {
@@ -46,8 +50,6 @@ async function generateWithFal(imageUrl, prompt, options = {}) {
   if (!requestId) throw new Error("fal.ai did not return a request_id");
 
   console.log("fal.ai job submitted:", requestId);
-  console.log("fal.ai status_url:", job.status_url);
-  console.log("fal.ai response_url:", job.response_url);
 
   // Step 2: Poll for completion using URLs from submit response
   return await pollFalJob(job.status_url, job.response_url, falKey);
@@ -129,7 +131,7 @@ function getKlingAuth() {
   const accessKey = process.env.KLING_ACCESS_KEY;
   const secretKey = process.env.KLING_SECRET_KEY;
   if (!accessKey || !secretKey) {
-    throw new Error("KLING_ACCESS_KEY and KLING_SECRET_KEY must be configured");
+    throw new ProviderError("KLING_ACCESS_KEY and KLING_SECRET_KEY must be configured", { submitted: false });
   }
   return createJwt(accessKey, secretKey);
 }
@@ -145,8 +147,6 @@ async function generateWithKling(imageUrl, prompt, options = {}) {
     mode: options.mode || "std",
     duration: options.duration || "5",
   };
-
-  console.log("Kling image-to-video request:", JSON.stringify(body, null, 2));
 
   const res = await fetch(`${KLING_BASE}/v1/videos/image2video`, {
     method: "POST",
@@ -205,45 +205,7 @@ async function pollKlingTask(taskId, token, maxAttempts = 60) {
   throw new Error("Kling video generation timed out after polling");
 }
 
-// ---------------------------------------------------------------------------
-// Public API — tries fal.ai first, falls back to direct Kling
-// ---------------------------------------------------------------------------
-
-export async function generateVideoFromImage(imageUrl, prompt = "", options = {}) {
-  let falError;
-
-  // Try fal.ai (primary)
-  if (process.env.FAL_KEY) {
-    try {
-      console.log("Trying fal.ai (primary)...");
-      const videoUrl = await generateWithFal(imageUrl, prompt, options);
-      return { videoUrl };
-    } catch (err) {
-      falError = err;
-      console.error("fal.ai failed:", err.message);
-    }
-  }
-
-  // Fallback to direct Kling API
-  if (process.env.KLING_ACCESS_KEY && process.env.KLING_SECRET_KEY) {
-    try {
-      console.log("Falling back to direct Kling API...");
-      const videoUrl = await generateWithKling(imageUrl, prompt, options);
-      return { videoUrl };
-    } catch (klingErr) {
-      console.error("Kling also failed:", klingErr.message);
-      throw new Error(
-        `All video providers failed. fal.ai: ${falError?.message || "not configured"}. Kling: ${klingErr.message}`
-      );
-    }
-  }
-
-  throw new Error(
-    `Video generation failed. fal.ai: ${falError?.message || "FAL_KEY not configured"}. Kling: KLING keys not configured.`
-  );
-}
-
-export async function generateVideoFromText(prompt, options = {}) {
+async function klingTextToVideo(prompt, options = {}) {
   // Text-to-video only available via direct Kling
   const token = getKlingAuth();
   const body = {
@@ -275,4 +237,36 @@ export async function generateVideoFromText(prompt, options = {}) {
 
   const videoUrl = await pollKlingTask(taskId, token);
   return { videoUrl };
+}
+
+// ---------------------------------------------------------------------------
+// Adapter registry and public API
+// ---------------------------------------------------------------------------
+
+/** Keyed by "provider:model". Presence here does not mean approved. */
+export const videoAdapters = {
+  "fal:kling-v2.1-i2v": {
+    generate: async ({ imageUrl, prompt, options }) => {
+      if (!imageUrl) throw new ProviderError("fal:kling-v2.1-i2v requires a source image", { submitted: false });
+      return { videoUrl: await generateWithFal(imageUrl, prompt, options) };
+    },
+  },
+  "kling:kling-v2-1": {
+    generate: async ({ imageUrl, prompt, options }) =>
+      imageUrl
+        ? { videoUrl: await generateWithKling(imageUrl, prompt, options) }
+        : klingTextToVideo(prompt, options),
+  },
+};
+
+/** Image-to-video with the selected, approved provider only. */
+export async function generateVideoFromImage(imageUrl, prompt = "", options = {}, { idempotencyKey } = {}) {
+  const result = await getDefaultGate().run("video", { imageUrl, prompt, options, idempotencyKey });
+  return { videoUrl: result.videoUrl };
+}
+
+/** Text-to-video with the selected, approved provider only. */
+export async function generateVideoFromText(prompt, options = {}, { idempotencyKey } = {}) {
+  const result = await getDefaultGate().run("video", { imageUrl: null, prompt, options, idempotencyKey });
+  return { videoUrl: result.videoUrl };
 }

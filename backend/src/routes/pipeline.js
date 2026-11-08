@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { ApiError, sendError } from "../lib/errors.js";
 import { discoverTrends, analyzeTrendRelevance } from "../services/trendDiscovery.js";
 import { generateScript } from "../services/scriptGeneration.js";
 import { generateCaption, generateHashtags } from "../services/captionGeneration.js";
@@ -291,8 +292,9 @@ router.post("/generate-content", async (req, res) => {
       res.status(400).json({ error: `Unsupported content type: ${type}` });
     }
   } catch (err) {
-    console.error("POST /pipeline/generate-content error:", err);
-    res.status(500).json({ error: "Failed to generate content" });
+    if (err instanceof ApiError) return sendError(res, err);
+    console.error("POST /pipeline/generate-content error:", err.message);
+    res.status(500).json({ error: "Failed to generate content", code: "INTERNAL_ERROR" });
   }
 });
 
@@ -339,6 +341,12 @@ router.post("/generate-caption", async (req, res) => {
 // POST /api/pipeline/:id/approve — approve a pipeline item
 router.post("/:id/approve", async (req, res) => {
   try {
+    const current = await req.prisma.pipelineItem.findUnique({ where: { id: req.params.id } });
+    if (!current) return sendError(res, new ApiError("NOT_FOUND", 404, "Pipeline item not found"));
+    if (current.stage !== "review") {
+      return sendError(res, new ApiError("INVALID_TRANSITION", 409,
+        `Only items in review can be approved (current stage: ${current.stage})`));
+    }
     const item = await req.prisma.pipelineItem.update({
       where: { id: req.params.id },
       data: {
@@ -361,6 +369,12 @@ router.post("/:id/approve", async (req, res) => {
 // POST /api/pipeline/:id/reject — reject a pipeline item
 router.post("/:id/reject", async (req, res) => {
   try {
+    const current = await req.prisma.pipelineItem.findUnique({ where: { id: req.params.id } });
+    if (!current) return sendError(res, new ApiError("NOT_FOUND", 404, "Pipeline item not found"));
+    if (!["content_generated", "review", "approved"].includes(current.stage)) {
+      return sendError(res, new ApiError("INVALID_TRANSITION", 409,
+        `Items in stage ${current.stage} cannot be rejected`));
+    }
     const item = await req.prisma.pipelineItem.update({
       where: { id: req.params.id },
       data: {

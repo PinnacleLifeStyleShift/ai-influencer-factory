@@ -1,13 +1,47 @@
 const API_URL = import.meta.env.VITE_API_URL || "https://api-production-5a00.up.railway.app";
 
-async function request(path, options = {}) {
+// Owner API token: entered by the operator at runtime and kept only in this
+// browser tab's sessionStorage. It is never baked into the frontend bundle.
+const TOKEN_KEY = "aif.ownerToken";
+
+function getToken() {
+  try { return sessionStorage.getItem(TOKEN_KEY) || ""; } catch { return ""; }
+}
+function setToken(value) {
+  try {
+    if (value) sessionStorage.setItem(TOKEN_KEY, value);
+    else sessionStorage.removeItem(TOKEN_KEY);
+  } catch { /* storage unavailable */ }
+}
+
+export function signOut() {
+  setToken("");
+}
+
+async function request(path, options = {}, retried = false) {
+  const token = getToken();
   const res = await fetch(`${API_URL}${path}`, {
-    headers: { "Content-Type": "application/json", ...options.headers },
     ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...options.headers,
+    },
   });
+  if (res.status === 401 && !retried && typeof window !== "undefined") {
+    setToken("");
+    const entered = window.prompt("Enter the owner API token for this workspace:");
+    if (entered) {
+      setToken(entered.trim());
+      return request(path, options, true);
+    }
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || `API error ${res.status}`);
+    const e = new Error(err.error || `API error ${res.status}`);
+    e.code = err.code;
+    e.status = res.status;
+    throw e;
   }
   return res.json();
 }

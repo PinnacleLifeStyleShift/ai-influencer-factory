@@ -593,7 +593,6 @@ function ContentCalendar({ content, setContent, characters }) {
                   {c.motion_prompt&&<div className="text-zinc-500 text-xs font-mono mt-0.5 truncate">"{c.motion_prompt}"</div>}
                 </div>
                 <div className="flex gap-2 text-xs">
-                  {c.status==="scheduled"&&<button onClick={async()=>{try{const u=await api.content.update(c.id,{status:"published"});setContent(cs=>cs.map(x=>x.id===c.id?normalizeContent(u):x));}catch(e){console.error(e);}}} className="text-[#C8FF00] hover:underline">Publish</button>}
                   <button onClick={async()=>{try{await api.content.delete(c.id);setContent(cs=>cs.filter(x=>x.id!==c.id));}catch(e){console.error(e);}}} className="text-red-400 hover:underline">Delete</button>
                 </div>
               </div>
@@ -632,7 +631,7 @@ function ContentCalendar({ content, setContent, characters }) {
               <div>
                 <label className={css.label}>Status</label>
                 <select className={css.input} value={f.status} onChange={e=>set("status",e.target.value)}>
-                  {["draft","scheduled","published"].map(s=><option key={s} value={s}>{s}</option>)}
+                  {["draft","scheduled"].map(s=><option key={s} value={s}>{s}</option>)}
                 </select>
               </div>
             </div>

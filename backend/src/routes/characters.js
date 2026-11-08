@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { ApiError, sendError } from "../lib/errors.js";
 const router = Router();
 
 // GET /api/characters — list all
@@ -141,10 +142,11 @@ router.post("/:id/generate-image", async (req, res) => {
     // 2. Build prompt and generate image
     const { buildPromptFromCharacter, generateImage } = await import("../services/imageGeneration.js");
     const prompt = buildPromptFromCharacter(character);
-    const imageUrl = await generateImage(prompt, {
-      aspectRatio: character.aspectRatio,
-      quality: character.qualitySetting,
-    });
+    const imageUrl = await generateImage(
+      prompt,
+      { aspectRatio: character.aspectRatio, quality: character.qualitySetting },
+      { idempotencyKey: req.get("idempotency-key") || undefined }
+    );
 
     // 3. Save image URL to database
     const updated = await req.prisma.character.update({
@@ -154,16 +156,9 @@ router.post("/:id/generate-image", async (req, res) => {
 
     res.json(updated);
   } catch (err) {
-    console.error("POST /characters/:id/generate-image error:", err);
-
-    if (err.message.includes("HIGGSFIELD_API_KEY")) {
-      return res.status(503).json({ error: "Image generation service is not configured" });
-    }
-    if (err.message.includes("Higgsfield API error")) {
-      return res.status(502).json({ error: err.message });
-    }
-
-    res.status(500).json({ error: "Failed to generate image" });
+    if (err instanceof ApiError) return sendError(res, err);
+    console.error("POST /characters/:id/generate-image error:", err.message);
+    res.status(500).json({ error: "Failed to generate image", code: "INTERNAL_ERROR" });
   }
 });
 
@@ -186,23 +181,19 @@ router.post("/:id/generate-video", async (req, res) => {
       result = await generateVideoFromImage(character.referenceImageUrl, prompt, {
         aspectRatio: character.aspectRatio === "9:16" ? "9:16" : "16:9",
         duration: req.body.duration || "5",
-      });
+      }, { idempotencyKey: req.get("idempotency-key") || undefined });
     } else {
       result = await generateVideoFromText(prompt, {
         aspectRatio: character.aspectRatio === "9:16" ? "9:16" : "16:9",
         duration: req.body.duration || "5",
-      });
+      }, { idempotencyKey: req.get("idempotency-key") || undefined });
     }
 
     res.json({ videoUrl: result.videoUrl, taskId: result.taskId, character });
   } catch (err) {
-    console.error("POST /characters/:id/generate-video error:", err);
-
-    if (err.message.includes("KLING")) {
-      return res.status(503).json({ error: "Video generation service is not configured" });
-    }
-
-    res.status(500).json({ error: err.message || "Failed to generate video" });
+    if (err instanceof ApiError) return sendError(res, err);
+    console.error("POST /characters/:id/generate-video error:", err.message);
+    res.status(500).json({ error: "Failed to generate video", code: "INTERNAL_ERROR" });
   }
 });
 

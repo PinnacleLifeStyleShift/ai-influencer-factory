@@ -1,4 +1,23 @@
 import { Router } from "express";
+import { ApiError, sendError } from "../lib/errors.js";
+
+/**
+ * Statuses a client may set directly. "published" is reserved for a future
+ * publisher that records platform-confirmed evidence (spec F5); no publisher
+ * exists, so the API refuses to mark anything as published.
+ */
+const CLIENT_SETTABLE_STATUSES = new Set(["draft", "scheduled"]);
+
+function assertClientStatus(status) {
+  if (status === undefined) return;
+  if (status === "published") {
+    throw new ApiError("PUBLISHING_NOT_ENABLED", 409,
+      "Publishing is not enabled. Content cannot be marked published without platform confirmation.");
+  }
+  if (!CLIENT_SETTABLE_STATUSES.has(status)) {
+    throw new ApiError("VALIDATION_FAILED", 400, `Unsupported status: ${String(status).slice(0, 40)}`);
+  }
+}
 const router = Router();
 
 // GET /api/content — list all, optional ?month=2026-03
@@ -50,6 +69,7 @@ router.get("/:id", async (req, res) => {
 // POST /api/content — create
 router.post("/", async (req, res) => {
   try {
+    assertClientStatus(req.body.status);
     const item = await req.prisma.content.create({
       data: {
         title: req.body.title,
@@ -67,6 +87,7 @@ router.post("/", async (req, res) => {
     });
     res.status(201).json({ ...item, character_name: item.character?.name || "" });
   } catch (err) {
+    if (err instanceof ApiError) return sendError(res, err);
     console.error("POST /content error:", err);
     res.status(500).json({ error: "Failed to create content" });
   }
@@ -75,6 +96,7 @@ router.post("/", async (req, res) => {
 // PUT /api/content/:id — update
 router.put("/:id", async (req, res) => {
   try {
+    assertClientStatus(req.body.status);
     const data = {};
     const fields = {
       title: "title", content_type: "contentType", contentType: "contentType",
@@ -95,6 +117,7 @@ router.put("/:id", async (req, res) => {
     });
     res.json({ ...item, character_name: item.character?.name || "" });
   } catch (err) {
+    if (err instanceof ApiError) return sendError(res, err);
     console.error("PUT /content/:id error:", err);
     res.status(500).json({ error: "Failed to update content" });
   }

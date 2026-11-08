@@ -1,54 +1,26 @@
-import express from "express";
-import cors from "cors";
-import helmet from "helmet";
-import morgan from "morgan";
 import { PrismaClient } from "@prisma/client";
-
-import characterRoutes from "./routes/characters.js";
-import contentRoutes from "./routes/content.js";
-import campaignRoutes from "./routes/campaigns.js";
-import dashboardRoutes from "./routes/dashboard.js";
-import pipelineRoutes from "./routes/pipeline.js";
+import { createApp } from "./app.js";
+import { MIN_TOKEN_LENGTH } from "./middleware/auth.js";
 
 const prisma = new PrismaClient();
-const app = express();
 const PORT = parseInt(process.env.PORT) || 4000;
 
-// ─── Middleware ────────────────────────────────────────────
-app.use(helmet());
-app.use(cors({ origin: process.env.FRONTEND_URL || "*" }));
-app.use(morgan("tiny"));
-app.use(express.json());
+const app = createApp({ prisma });
 
-// Attach prisma to request
-app.use((req, _res, next) => {
-  req.prisma = prisma;
-  next();
-});
+if (!process.env.OWNER_API_TOKEN || process.env.OWNER_API_TOKEN.length < MIN_TOKEN_LENGTH) {
+  console.warn(`⚠️  OWNER_API_TOKEN is unset or shorter than ${MIN_TOKEN_LENGTH} chars: all /api routes will refuse requests.`);
+}
+if (!process.env.FRONTEND_URL) {
+  console.warn("⚠️  FRONTEND_URL is unset: no browser origin is granted CORS access.");
+}
+if (process.env.LIVE_PROVIDER_CALLS === "enabled") {
+  console.warn("⚠️  LIVE_PROVIDER_CALLS=enabled. Paid calls still require approval, prices, caps and a durable ledger.");
+}
 
-// ─── Routes ───────────────────────────────────────────────
-app.use("/api/characters", characterRoutes);
-app.use("/api/content", contentRoutes);
-app.use("/api/campaigns", campaignRoutes);
-app.use("/api/dashboard", dashboardRoutes);
-app.use("/api/pipeline", pipelineRoutes);
-
-// Health check
-app.get("/", (_req, res) => res.json({ status: "ok", service: "ai-influencer-factory-api" }));
-app.get("/health", (_req, res) => res.json({ status: "ok" }));
-
-// ─── Error handler ────────────────────────────────────────
-app.use((err, _req, res, _next) => {
-  console.error("Unhandled error:", err);
-  res.status(500).json({ error: "Internal server error" });
-});
-
-// ─── Start ────────────────────────────────────────────────
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 API running on port ${PORT}`);
 });
 
-// Graceful shutdown
 process.on("SIGTERM", async () => {
   await prisma.$disconnect();
   process.exit(0);
