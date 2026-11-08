@@ -332,6 +332,13 @@ function Characters({ characters, setCharacters }) {
   const [typeFilter, setTypeFilter] = useState("");
   const [detail, setDetail] = useState(null);
   const [generatingImage, setGeneratingImage] = useState(false);
+  const [imageHistory, setImageHistory] = useState([]);
+
+  // Load candidates / replaced references whenever a character is opened.
+  useEffect(() => {
+    if (!detail) { setImageHistory([]); return; }
+    api.characters.images(detail).then(r => setImageHistory(r.images || [])).catch(() => setImageHistory([]));
+  }, [detail]);
 
   const filtered = characters.filter(c =>
     (!search || [c.name,c.niche,c.persona].some(v=>(v||"").toLowerCase().includes(search.toLowerCase()))) &&
@@ -359,16 +366,30 @@ function Characters({ characters, setCharacters }) {
     } catch (err) { console.error("Delete character failed:", err); }
   };
 
+  // Generation only adds a candidate; the reference image is changed solely by
+  // the explicit "Use as reference" action below.
   const handleGenerateImage = async (id) => {
     setGeneratingImage(true);
     try {
-      const updated = await api.characters.generateImage(id);
-      setCharacters(cs => cs.map(c => c.id === id ? normalizeChar(updated) : c));
+      const { candidate } = await api.characters.generateImage(id);
+      setImageHistory(h => [candidate, ...h.filter(i => i.id !== candidate.id)]);
     } catch (err) {
       console.error("Generate image failed:", err);
       alert(`Image generation failed: ${err.message}`);
     } finally {
       setGeneratingImage(false);
+    }
+  };
+
+  const handleUseAsReference = async (charId, image, hasReference) => {
+    if (hasReference && !confirm("Replace the current reference image? The current one is kept in history.")) return;
+    try {
+      const r = await api.characters.setReferenceImage(charId, { imageId: image.id, replaceReference: hasReference });
+      setCharacters(cs => cs.map(c => c.id === charId ? normalizeChar(r.character) : c));
+      const refreshed = await api.characters.images(charId);
+      setImageHistory(refreshed.images || []);
+    } catch (err) {
+      alert(`Could not set reference image: ${err.message}`);
     }
   };
 
@@ -395,6 +416,24 @@ function Characters({ characters, setCharacters }) {
             </div>
           </div>
         </div>
+
+        {imageHistory.length > 0 && (
+          <div className={`${css.card} p-4 mb-6`}>
+            <div className="text-xs text-zinc-500 mb-3">Generated images (the reference image only changes when you choose one)</div>
+            <div className="flex gap-3 overflow-x-auto">
+              {imageHistory.map(img => (
+                <div key={img.id} className="flex-shrink-0 w-28">
+                  <img src={img.imageUrl} alt="" className="w-28 h-28 object-cover rounded-lg border border-[#2a2a3a]" />
+                  <div className="text-[10px] text-zinc-500 mt-1">{img.status === "reference" ? "Current reference" : img.status === "replaced_reference" ? "Previous reference" : "Candidate"}</div>
+                  {img.status !== "reference" && img.imageUrl !== c.reference_image_url && (
+                    <button onClick={() => handleUseAsReference(c.id, img, Boolean(c.reference_image_url))}
+                      className="text-[10px] text-[#C8FF00] hover:underline">Use as reference</button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-4 gap-4 mb-6">
           {[["Followers",(c.follower_count||0).toLocaleString()],["Total Views",(c.total_views||0).toLocaleString()],["Engagement",`${c.engagement_rate||"0.00"}%`,true],["Platforms",(c.target_platforms||[]).join(", ")||"—"]].map(([l,v,volt])=>(

@@ -80,7 +80,7 @@ test("routes use the gate injected into the app (no module-global gate)", async 
   const gate = {
     describe: () => ({ injected: true }),
     preflightAll: () => [],
-    run: async (kind, input, keys) => { calls.push({ kind, keys }); return { imageUrl: "https://example.test/injected.png" }; },
+    run: async (kind, input, keys) => { calls.push({ kind, keys }); return { videoUrl: "https://example.test/injected.mp4" }; },
     runWorkflow: async () => { throw new Error("unused"); },
   };
   const prisma = seed();
@@ -88,10 +88,11 @@ test("routes use the gate injected into the app (no module-global gate)", async 
   try {
     const policy = await (await app.call("/api/system/generation-policy", { token: TOKEN })).json();
     assert.deepEqual(policy, { injected: true });
-    const r = await app.call("/api/characters/c1/generate-image", { method: "POST", body: {}, token: TOKEN });
+    const r = await app.call("/api/characters/c1/generate-video", { method: "POST", body: {}, token: TOKEN });
     assert.equal(r.status, 200);
     assert.equal(calls.length, 1);
-    assert.match(calls[0].keys.idempotencyKey, /^char\|c1:image:/);
+    assert.equal(calls[0].kind, "video");
+    assert.match(calls[0].keys.idempotencyKey, /^char\|c1:video:/);
     assert.ok(calls[0].keys.requestHash);
   } finally { await app.close(); }
 });

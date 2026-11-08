@@ -118,6 +118,9 @@ export const characters = {
   delete: (id) => request(`/api/characters/${id}`, { method: "DELETE" }),
   generateImage: (id, { idempotencyKey } = {}) =>
     request(`/api/characters/${id}/generate-image`, { method: "POST", idempotencyKey }),
+  images: (id) => request(`/api/characters/${id}/images`),
+  setReferenceImage: (id, data) =>
+    request(`/api/characters/${id}/reference-image`, { method: "POST", body: JSON.stringify(data) }),
 };
 
 // ─── Content ──────────────────────────────────────────────

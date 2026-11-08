@@ -392,3 +392,108 @@ test("trend discovery validates input and labels fixture provenance", opts, () =
     assert.match(t.description, /^\[Simulated idea\]/);
   }
 }));
+
+// ─── Reference image is never overwritten by generation ──────
+
+test("generate-image stores a candidate and leaves the reference image untouched", opts, async () => {
+  const { gate, calls } = mockGate(prisma);
+  await withApp(async (app) => {
+    const c = await makeCharacter(prisma, { referenceImageUrl: "https://example.test/approved-ref.png" });
+    const first = await app.call(`/api/characters/${c.id}/generate-image`, { method: "POST", token: TOKEN, body: {} }).then(json);
+    assert.equal(first.status, 201);
+    assert.equal(first.body.candidate.status, "candidate");
+    assert.equal(first.body.candidate.imageUrl, "https://example.test/gen-1.png");
+    assert.equal(first.body.candidate.provider, "higgsfield");
+    assert.equal(first.body.character.referenceImageUrl, "https://example.test/approved-ref.png");
+
+    const second = await app.call(`/api/characters/${c.id}/generate-image`, { method: "POST", token: TOKEN, body: {} }).then(json);
+    assert.equal(second.status, 201, "a new generation after the first is stored is a new request");
+    assert.equal(calls.image, 2);
+
+    const stored = await prisma.character.findUnique({ where: { id: c.id } });
+    assert.equal(stored.referenceImageUrl, "https://example.test/approved-ref.png");
+    assert.equal(stored.imageGenerations, 2);
+    assert.equal(await prisma.characterImage.count({ where: { characterId: c.id, status: "candidate" } }), 2);
+  }, { gate });
+});
+
+test("concurrent generate-image clicks buy one image and store one candidate", opts, async () => {
+  const { gate, calls } = mockGate(prisma, {
+    image: async (_i, n) => { await new Promise((r) => setTimeout(r, 150)); return { imageUrl: `https://example.test/c-${n}.png` }; },
+  });
+  await withApp(async (app) => {
+    const c = await makeCharacter(prisma);
+    const results = await Promise.all(Array.from({ length: 5 }, () =>
+      app.call(`/api/characters/${c.id}/generate-image`, { method: "POST", token: TOKEN, body: {} }).then(json)));
+    assert.equal(calls.image, 1);
+    assert.equal(results.filter((r) => r.status === 201).length, 1);
+    assert.ok(results.filter((r) => r.status !== 201).every((r) => r.body.code === "DUPLICATE_IN_PROGRESS"));
+    assert.equal(await prisma.characterImage.count(), 1);
+  }, { gate });
+});
+
+test("retrying with the same Idempotency-Key returns the stored candidate without a new call", opts, async () => {
+  const { gate, calls } = mockGate(prisma);
+  await withApp(async (app) => {
+    const c = await makeCharacter(prisma);
+    const headers = { "Idempotency-Key": "ui-char-image-0001" };
+    const a = await app.call(`/api/characters/${c.id}/generate-image`, { method: "POST", token: TOKEN, headers, body: {} }).then(json);
+    const b = await app.call(`/api/characters/${c.id}/generate-image`, { method: "POST", token: TOKEN, headers, body: {} }).then(json);
+    assert.equal(a.status, 201);
+    assert.equal(b.status, 201);
+    assert.equal(b.body.replayed, true);
+    assert.equal(b.body.candidate.id, a.body.candidate.id);
+    assert.equal(calls.image, 1);
+    assert.equal(await prisma.characterImage.count(), 1);
+  }, { gate });
+});
+
+test("failed generation leaves the reference image and candidates unchanged", opts, async () => {
+  const { gate } = mockGate(prisma, { image: () => { throw new Error("socket timeout"); } });
+  await withApp(async (app) => {
+    const c = await makeCharacter(prisma, { referenceImageUrl: "https://example.test/approved-ref.png" });
+    const r = await app.call(`/api/characters/${c.id}/generate-image`, { method: "POST", token: TOKEN, body: {} }).then(json);
+    assert.equal(r.body.code, "OUTCOME_UNKNOWN");
+    const stored = await prisma.character.findUnique({ where: { id: c.id } });
+    assert.equal(stored.referenceImageUrl, "https://example.test/approved-ref.png");
+    assert.equal(await prisma.characterImage.count(), 0);
+  }, { gate });
+});
+
+test("reference image changes only by explicit promotion, keeping history", opts, async () => {
+  const { gate } = mockGate(prisma);
+  await withApp(async (app) => {
+    const c = await makeCharacter(prisma, { referenceImageUrl: "https://example.test/approved-ref.png" });
+    const gen = await app.call(`/api/characters/${c.id}/generate-image`, { method: "POST", token: TOKEN, body: {} }).then(json);
+    const imageId = gen.body.candidate.id;
+
+    const unconfirmed = await app.call(`/api/characters/${c.id}/reference-image`, { method: "POST", token: TOKEN, body: { imageId } }).then(json);
+    assert.equal(unconfirmed.body.code, "REFERENCE_EXISTS");
+    assert.equal((await prisma.character.findUnique({ where: { id: c.id } })).referenceImageUrl, "https://example.test/approved-ref.png");
+
+    const ok = await app.call(`/api/characters/${c.id}/reference-image`, { method: "POST", token: TOKEN, body: { imageId, replaceReference: true } }).then(json);
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.character.referenceImageUrl, "https://example.test/gen-1.png");
+    assert.equal(ok.body.image.status, "reference");
+
+    const list = await app.call(`/api/characters/${c.id}/images`, { token: TOKEN }).then(json);
+    const previous = list.body.images.find((i) => i.imageUrl === "https://example.test/approved-ref.png");
+    assert.equal(previous?.status, "replaced_reference", "previous reference kept in history");
+
+    const other = await makeCharacter(prisma);
+    const cross = await app.call(`/api/characters/${other.id}/reference-image`, { method: "POST", token: TOKEN, body: { imageId } }).then(json);
+    assert.equal(cross.status, 404, "cannot promote another character's image");
+  }, { gate });
+});
+
+test("first reference can be set without confirmation", opts, async () => {
+  const { gate } = mockGate(prisma);
+  await withApp(async (app) => {
+    const c = await makeCharacter(prisma);
+    const gen = await app.call(`/api/characters/${c.id}/generate-image`, { method: "POST", token: TOKEN, body: {} }).then(json);
+    assert.equal(gen.body.character.referenceImageUrl, null, "generation alone never sets a reference");
+    const ok = await app.call(`/api/characters/${c.id}/reference-image`, { method: "POST", token: TOKEN, body: { imageId: gen.body.candidate.id } }).then(json);
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.character.referenceImageUrl, "https://example.test/gen-1.png");
+  }, { gate });
+});

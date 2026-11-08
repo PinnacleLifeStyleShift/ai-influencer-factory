@@ -26,6 +26,8 @@ model Character {
   aspectRatio       String   @default("9:16") @map("aspect_ratio")
   qualitySetting    String   @default("4K") @map("quality_setting")
   referenceImageUrl String?  @map("reference_image_url")
+  // Monotonic counter of generated images; part of the generation idempotency key.
+  imageGenerations  Int      @default(0) @map("image_generations")
 
   // B-O-P-A Framework
   bopaBackground    String?  @map("bopa_background")
@@ -47,8 +49,32 @@ model Character {
   submissions       CampaignSubmission[]
   scripts           Script[]
   pipelineItems     PipelineItem[]
+  images            CharacterImage[]
 
   @@map("characters")
+}
+
+// ─── CHARACTER IMAGES ────────────────────────────────────────
+// Generated candidates and replaced references. Generation never changes the
+// character's reference image; only an explicit promotion does.
+
+model CharacterImage {
+  id              String   @id @default(cuid())
+  characterId     String   @map("character_id")
+  character       Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  imageUrl        String   @map("image_url")
+  status          String   @default("candidate") // candidate | reference | replaced_reference
+  source          String   // generated | manual
+  provider        String?
+  model           String?
+  reservationId   String?  @map("reservation_id")
+  generationIndex Int?     @map("generation_index")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@unique([characterId, generationIndex])
+  @@index([characterId, createdAt])
+  @@map("character_images")
 }
 
 // ─── CONTENT ──────────────────────────────────────────────────

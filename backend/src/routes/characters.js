@@ -2,7 +2,7 @@ import { Router } from "express";
 import { ApiError, sendError } from "../lib/errors.js";
 import { readIdempotencyKey, isUniqueViolation } from "../lib/requests.js";
 import { requestHash } from "../services/spendLedger.js";
-import { buildPromptFromCharacter, generateImage } from "../services/imageGeneration.js";
+import { buildPromptFromCharacter } from "../services/imageGeneration.js";
 import { generateVideo } from "../services/videoGeneration.js";
 
 const router = Router();
@@ -36,18 +36,24 @@ async function createWithNextCharacterId(prisma, data, attempts = 5) {
 
 /**
  * Idempotency for character generation: a client Idempotency-Key, or a server
- * key tied to the character's current version (updatedAt), so a double click
- * cannot buy the same generation twice.
+ * key so a double click cannot buy the same generation twice. Image keys use
+ * the monotonic imageGenerations counter (the next image is a new request
+ * only once the previous one was stored); video keys use updatedAt.
  */
 function generationKeys(req, character, kind) {
   const clientKey = readIdempotencyKey(req);
+  const serverPart = kind === "image"
+    ? `g${character.imageGenerations}`
+    : new Date(character.updatedAt).toISOString();
   return {
     idempotencyKey: clientKey
       ? `char|client:${clientKey}:${kind}`
-      : `char|${character.id}:${kind}:${new Date(character.updatedAt).toISOString()}`,
+      : `char|${character.id}:${kind}:${serverPart}`,
     requestHash: requestHash({ op: `character.generate-${kind}`, characterId: character.id }),
   };
 }
+
+const notFound = () => new ApiError("NOT_FOUND", 404, "Character not found");
 
 // GET /api/characters — list all
 router.get("/", async (req, res) => {
@@ -170,28 +176,131 @@ router.delete("/:id", async (req, res) => {
   }
 });
 
-// POST /api/characters/:id/generate-image — through the injected generation gate
+/**
+ * POST /api/characters/:id/generate-image
+ * Generates a CANDIDATE image through the injected gate. The character's
+ * reference image is never changed here; promote a candidate explicitly with
+ * POST /api/characters/:id/reference-image.
+ */
 router.post("/:id/generate-image", async (req, res) => {
   try {
     const character = await req.prisma.character.findUnique({ where: { id: req.params.id } });
-    if (!character) return res.status(404).json({ error: "Character not found", code: "NOT_FOUND" });
+    if (!character) throw notFound();
 
-    const imageUrl = await generateImage(
-      req.generationGate,
-      buildPromptFromCharacter(character),
-      { aspectRatio: character.aspectRatio, quality: character.qualitySetting },
+    const result = await req.generationGate.run(
+      "image",
+      {
+        prompt: buildPromptFromCharacter(character),
+        options: { aspectRatio: character.aspectRatio, quality: character.qualitySetting },
+      },
       generationKeys(req, character, "image")
     );
 
-    const updated = await req.prisma.character.update({
-      where: { id: req.params.id },
-      data: { referenceImageUrl: imageUrl },
+    // Store the candidate and advance the counter together. A replayed result
+    // (same request retried) whose candidate is already stored is returned as is.
+    const index = character.imageGenerations + 1;
+    const candidate = await req.prisma.$transaction(async (tx) => {
+      if (result.reservationId) {
+        const existing = await tx.characterImage.findFirst({ where: { reservationId: result.reservationId } });
+        if (existing) return existing;
+      }
+      const { count } = await tx.character.updateMany({
+        where: { id: character.id, imageGenerations: character.imageGenerations },
+        data: { imageGenerations: { increment: 1 } },
+      });
+      if (count !== 1) throw new ApiError("REVISION_CONFLICT", 409, "Character changed during generation; reload and retry");
+      return tx.characterImage.create({
+        data: {
+          characterId: character.id,
+          imageUrl: result.imageUrl,
+          status: "candidate",
+          source: "generated",
+          provider: result.provider,
+          model: result.model,
+          reservationId: result.reservationId || null,
+          generationIndex: index,
+        },
+      });
     });
-    res.json(updated);
+
+    const current = await req.prisma.character.findUnique({ where: { id: character.id } });
+    res.status(201).json({ candidate, character: current, replayed: result.replayed === true });
   } catch (err) {
     if (err instanceof ApiError) return sendError(res, err);
     console.error("POST /characters/:id/generate-image error:", err.message);
     res.status(500).json({ error: "Failed to generate image", code: "INTERNAL_ERROR" });
+  }
+});
+
+// GET /api/characters/:id/images — candidates and replaced references, newest first
+router.get("/:id/images", async (req, res) => {
+  try {
+    const character = await req.prisma.character.findUnique({ where: { id: req.params.id } });
+    if (!character) throw notFound();
+    const images = await req.prisma.characterImage.findMany({
+      where: { characterId: character.id },
+      orderBy: { createdAt: "desc" },
+    });
+    res.json({ referenceImageUrl: character.referenceImageUrl, images });
+  } catch (err) {
+    if (err instanceof ApiError) return sendError(res, err);
+    console.error("GET /characters/:id/images error:", err.message);
+    res.status(500).json({ error: "Failed to list images", code: "INTERNAL_ERROR" });
+  }
+});
+
+/**
+ * POST /api/characters/:id/reference-image { imageId, replaceReference? }
+ * Explicitly promotes a candidate to the reference image. Replacing an
+ * existing reference requires replaceReference: true; the previous reference
+ * is kept in history as "replaced_reference", never lost.
+ */
+router.post("/:id/reference-image", async (req, res) => {
+  try {
+    const { imageId, replaceReference } = req.body || {};
+    if (!imageId || typeof imageId !== "string") {
+      throw new ApiError("VALIDATION_FAILED", 400, "imageId is required");
+    }
+    const result = await req.prisma.$transaction(async (tx) => {
+      const character = await tx.character.findUnique({ where: { id: req.params.id } });
+      if (!character) throw notFound();
+      const image = await tx.characterImage.findUnique({ where: { id: imageId } });
+      if (!image || image.characterId !== character.id) {
+        throw new ApiError("NOT_FOUND", 404, "Image not found for this character");
+      }
+      if (character.referenceImageUrl === image.imageUrl) return { character, image, changed: false };
+      if (character.referenceImageUrl && replaceReference !== true) {
+        throw new ApiError("REFERENCE_EXISTS", 409,
+          "This character already has a reference image; confirm with replaceReference: true");
+      }
+
+      // Conditional update: fails if the reference changed since it was read.
+      const { count } = await tx.character.updateMany({
+        where: { id: character.id, referenceImageUrl: character.referenceImageUrl },
+        data: { referenceImageUrl: image.imageUrl },
+      });
+      if (count !== 1) throw new ApiError("REVISION_CONFLICT", 409, "Reference image changed; reload and retry");
+
+      if (character.referenceImageUrl) {
+        const previous = await tx.characterImage.findFirst({
+          where: { characterId: character.id, imageUrl: character.referenceImageUrl },
+        });
+        if (previous) {
+          await tx.characterImage.update({ where: { id: previous.id }, data: { status: "replaced_reference" } });
+        } else {
+          await tx.characterImage.create({
+            data: { characterId: character.id, imageUrl: character.referenceImageUrl, status: "replaced_reference", source: "manual" },
+          });
+        }
+      }
+      const promoted = await tx.characterImage.update({ where: { id: image.id }, data: { status: "reference" } });
+      return { character: await tx.character.findUnique({ where: { id: character.id } }), image: promoted, changed: true };
+    });
+    res.json(result);
+  } catch (err) {
+    if (err instanceof ApiError) return sendError(res, err);
+    console.error("POST /characters/:id/reference-image error:", err.message);
+    res.status(500).json({ error: "Failed to set reference image", code: "INTERNAL_ERROR" });
   }
 });
 
