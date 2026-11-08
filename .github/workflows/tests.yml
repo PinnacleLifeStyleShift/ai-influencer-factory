@@ -1,0 +1,86 @@
+name: Tests
+
+# Runs the same test commands as local development. The database tests use
+# scripts/with-test-postgres.sh, which starts a throwaway PostgreSQL on
+# localhost from the runner's preinstalled server binaries and deletes it
+# afterwards. No secrets, no external services, nothing deployed.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (unit + Postgres integration + migrations)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci                    # postinstall runs prisma generate
+      - name: PostgreSQL server binaries
+        run: ls -d /usr/lib/postgresql/*/bin && /usr/lib/postgresql/*/bin/postgres --version
+      - name: Tests (disposable Postgres, migrations + drift check)
+        run: npm test
+      - name: Dependency audit
+        run: npm audit --audit-level=moderate
+
+  frontend:
+    name: Frontend (unit + build)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - name: Build
+        run: npm run build
+        env:
+          VITE_API_URL: https://api.example.test
+      - name: Bundle has no production API fallback
+        run: "! grep -l 'api-production-5a00' dist/assets/*.js"
+      - name: Dependency audit
+        run: npm audit --audit-level=moderate
+
+  e2e:
+    name: UI authentication (Playwright)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            backend/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm ci
+        working-directory: backend
+      - name: Install Playwright + Chromium
+        run: |
+          npm install --no-save --ignore-scripts playwright@1.63.0
+          npx playwright install --with-deps chromium
+      - name: UI auth check (local backend + Vite + disposable Postgres)
+        run: npm run test:e2e
