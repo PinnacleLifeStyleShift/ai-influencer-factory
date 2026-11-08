@@ -20,8 +20,14 @@
     "@prisma/client": "^6.5.0",
     "prisma": "^6.5.0",
     "cors": "^2.8.5",
-    "express": "^4.21.2",
+    "express": "^4.22.3",
     "helmet": "^8.0.0",
     "morgan": "^1.10.0"
+  },
+  "overrides": {
+    "@prisma/config": {
+      "deepmerge-ts": "^8.0.2",
+      "effect": "^3.22.4"
+    }
   }
 }
