@@ -92,7 +92,7 @@ test("routes use the gate injected into the app (no module-global gate)", async 
     assert.equal(r.status, 200);
     assert.equal(calls.length, 1);
     assert.equal(calls[0].kind, "video");
-    assert.match(calls[0].keys.idempotencyKey, /^char\|c1:video:/);
+    assert.match(calls[0].keys.idempotencyKey, /^char\|c1:video-text:/, "source is part of the key");
     assert.ok(calls[0].keys.requestHash);
   } finally { await app.close(); }
 });

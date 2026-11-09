@@ -142,8 +142,19 @@ export const characters = {
   generateImage: (id, { idempotencyKey } = {}) =>
     request(`/api/characters/${id}/generate-image`, { method: "POST", idempotencyKey }),
   images: (id) => request(`/api/characters/${id}/images`),
+  addImage: (id, imageUrl) => request(`/api/characters/${id}/images`, { method: "POST", body: JSON.stringify({ imageUrl }) }),
+  versions: (id) => request(`/api/characters/${id}/versions`),
+  publishVersion: (id, data = {}) => request(`/api/characters/${id}/versions`, { method: "POST", body: JSON.stringify(data) }),
+  restoreVersion: (id, n) => request(`/api/characters/${id}/versions/${n}/restore`, { method: "POST", body: "{}" }),
   setReferenceImage: (id, data) =>
     request(`/api/characters/${id}/reference-image`, { method: "POST", body: JSON.stringify(data) }),
+};
+
+// ─── Character image rights ─────────────────────────────
+export const characterImages = {
+  rights: (imageId) => request(`/api/character-images/${imageId}/rights`),
+  recordRights: (imageId, data) => request(`/api/character-images/${imageId}/rights`, { method: "POST", body: JSON.stringify(data) }),
+  approveRights: (imageId, recordId) => request(`/api/character-images/${imageId}/rights/approve`, { method: "POST", body: JSON.stringify({ recordId }) }),
 };
 
 // ─── Content ──────────────────────────────────────────────

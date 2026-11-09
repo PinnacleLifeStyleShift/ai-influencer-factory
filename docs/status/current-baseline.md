@@ -1,6 +1,6 @@
 # Current baseline
 
-Recorded 2026-11-09 for branch `pkg-a-identity-baseline`, stacked on PR #1.
+Recorded 2026-11-09. Updated for branch `pkg-b-character-bible` (stacked on `pkg-a-identity-baseline`, which is stacked on PR #1).
 No secret values appear here; Railway variables are listed by name only.
 
 Evidence labels:
@@ -41,16 +41,17 @@ Evidence labels:
 | `20261108000000_phase1_safety` | Approval, schedule, ledger, character images (additive) | TESTED LOCALLY, HOSTED CI |
 | `20261109000000_generation_fencing` | Claims, `generation_applications` (additive) | TESTED LOCALLY, HOSTED CI at `10704fa` |
 | `20261110000000_sessions` | `sessions` table (additive), this branch | TESTED LOCALLY |
-| `20261110010000_audit_events` | `audit_events` table (additive), this branch | TESTED LOCALLY |
+| `20261110010000_audit_events` | `audit_events` table (additive) | TESTED LOCALLY, HOSTED CI at `8ce8ace` |
+| `20261110020000_character_versions_rights` | Versions, rights, pins, recorded inputs (additive), Package B | TESTED LOCALLY |
 
 Deploy path: `npm start` → `scripts/migrate-deploy.mjs`. It verifies a pre-migration database is identical to the baseline before recording it, and refuses otherwise. Rollback with Railway's button alone does not work after migration (the old image's `db push` refuses); this was re-tested at `10704fa`. See the deployment checklist doc.
 
 ## Tests at this branch (TESTED LOCALLY)
 
-- Backend `npm test`: 98/98 pass, 0 skipped.
+- Backend `npm test`: 106/106 pass, 0 skipped.
 - Frontend vitest: 10/10 pass.
 - `vite build` passes.
-- Playwright UI auth check: passes.
+- Playwright UI auth check and character-bible check: pass.
 - `npm audit`: 0 vulnerabilities in both packages.
 - Both workflows run on this branch's PR; see its checks for HOSTED CI results at the exact head.
 
@@ -77,6 +78,20 @@ Not run here: Docker image builds (no Docker daemon in the sandbox; covered by t
 | Migrations and Docker images pass on the exact head | HOSTED CI on each push | PR checks |
 | Audit evidence for actions | Met (best effort, redacted) | db-hardening tests; ADR 0002 |
 | Production exposure secured | **Not met.** It needs the approved deployment and live verification | See "Known production exposure" |
+
+## Package B exit criteria
+
+| Criterion (brief section 6) | Status | Evidence |
+| --- | --- | --- |
+| A character can be versioned and recovered after reload | Met | db-characters (fresh client reads history); character-bible e2e (reload) |
+| Reference history is intact | Met | db-characters (replaced reference kept; old versions keep their pins) |
+| Generated artifacts record their actual inputs | Met (version or draft hash, prompt hash, references sent, conditioning) | db-characters |
+| Unauthorized or unsupported reference use is blocked with an explanation | Met, before any claim, reservation or provider call | db-characters (REFERENCE_NOT_CLEARED with missing items; REFERENCE_CONDITIONING_UNSUPPORTED) |
+| Content pins character version; identity changes cannot alter old content | Met; the version is part of the approval hash | db-characters (older pinned version; re-pin invalidates approval) |
+| Rights/consent record instead of a checkbox | Met (append-only, owner-approved, expiry, likeness consent) | db-characters |
+| Duplicate clicks, failures before/after provider, cross-character promotion | Covered by existing and new tests | db-routes, db-generation-races, db-characters |
+| Operator review rubric | Written | docs/review-rubric.md |
+| Real reference conditioning / identity quality | **Not met.** No approved adapter sends references; needs a provider decision and a human pilot | ADR 0003 |
 
 ## Repository instructions
 

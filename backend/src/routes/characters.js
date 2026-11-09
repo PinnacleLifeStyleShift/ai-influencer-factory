@@ -3,6 +3,10 @@ import { ApiError, sendError, routeError } from "../lib/errors.js";
 import { validateBody, listLimit, SCHEMAS } from "../lib/validate.js";
 import { readIdempotencyKey, isUniqueViolation } from "../lib/requests.js";
 import { checkExternalUrl } from "../lib/urlSafety.js";
+import {
+  publishVersion, restoreDraft, snapshotOf, contentHashOf, fingerprintUrl, promptHash,
+} from "../services/characterVersions.js";
+import { clearanceFor, latestRights, missingForUse } from "../services/rights.js";
 
 /** A reference image URL may be sent to providers later, so unsafe ones are refused on input. */
 function assertSafeReference(body) {
@@ -127,6 +131,15 @@ router.post("/", async (req, res) => {
         engagementRate: req.body.engagement_rate || req.body.engagementRate || "0.00",
         notes: req.body.notes,
     });
+    if (character.referenceImageUrl) {
+      // Tracked like any other reference: fingerprinted, no rights until recorded.
+      await req.prisma.characterImage.create({
+        data: {
+          characterId: character.id, imageUrl: character.referenceImageUrl, status: "reference",
+          source: "manual", fingerprint: fingerprintUrl(character.referenceImageUrl),
+        },
+      });
+    }
     res.status(201).json(character);
   } catch (err) {
     return routeError(res, err, "Failed to create character", "POST /characters");
@@ -166,6 +179,18 @@ router.put("/:id", async (req, res) => {
     if (req.body.total_views !== undefined || req.body.totalViews !== undefined)
       data.totalViews = parseInt(req.body.total_views ?? req.body.totalViews) || 0;
 
+    if (data.referenceImageUrl !== undefined) {
+      const current = await req.prisma.character.findUnique({ where: { id: req.params.id } });
+      if (!current) throw notFound();
+      // WHY: editing the URL in place would bypass reference history, rights
+      // and replacement confirmation. Unchanged values (the form re-sends
+      // them) are fine.
+      if ((data.referenceImageUrl || null) !== (current.referenceImageUrl || null)) {
+        throw new ApiError("USE_REFERENCE_WORKFLOW", 409,
+          "Change the reference image by adding it as an image and promoting it (POST /api/characters/:id/images, then /reference-image)");
+      }
+      delete data.referenceImageUrl;
+    }
     const character = await req.prisma.character.update({
       where: { id: req.params.id },
       data,
@@ -197,14 +222,26 @@ router.post("/:id/generate-image", async (req, res) => {
     const character = await req.prisma.character.findUnique({ where: { id: req.params.id } });
     if (!character) throw notFound();
 
+    // Candidates preview the editable draft. No reference is sent: the
+    // selected image adapter declares no reference conditioning.
+    const prompt = buildPromptFromCharacter(character);
     const result = await req.generationGate.run(
       "image",
-      {
-        prompt: buildPromptFromCharacter(character),
-        options: { aspectRatio: character.aspectRatio, quality: character.qualitySetting },
-      },
+      { prompt, options: { aspectRatio: character.aspectRatio, quality: character.qualitySetting } },
       generationKeys(req, character, "image")
     );
+    const draft = snapshotOf(character);
+    const draftHash = contentHashOf({ ...draft, references: [] });
+    const published = character.publishedVersionId
+      ? await req.prisma.characterVersion.findUnique({ where: { id: character.publishedVersionId } })
+      : null;
+    const generationInputs = {
+      basedOn: "draft",
+      draftHash,
+      promptHash: promptHash(prompt),
+      referencesSent: [],
+      conditioning: "none",
+    };
 
     // WHY: provider output is stored and may be forwarded later; refuse unsafe URLs.
     if (!checkExternalUrl(result.imageUrl).ok) {
@@ -234,6 +271,11 @@ router.post("/:id/generate-image", async (req, res) => {
           model: result.model,
           reservationId: result.reservationId || null,
           generationIndex: index,
+          fingerprint: fingerprintUrl(result.imageUrl),
+          // Linked to the published version only when the draft equals it.
+          characterVersionId: published && contentHashOf({ ...draft, references: [] }) ===
+            contentHashOf({ identity: published.identity, styling: published.styling, references: [] }) ? published.id : null,
+          generationInputs,
         },
       });
     });
@@ -255,7 +297,14 @@ router.get("/:id/images", async (req, res) => {
       where: { characterId: character.id },
       orderBy: { createdAt: "desc" },
     });
-    res.json({ referenceImageUrl: character.referenceImageUrl, images });
+    // Each image shows its newest rights record and what is missing before a
+    // provider may receive it.
+    const withRights = await Promise.all(images.map(async (img) => {
+      const rights = await latestRights(req.prisma, img.id);
+      const missing = missingForUse(rights, "provider_input");
+      return { ...img, rights, providerInput: { cleared: missing.length === 0, missing } };
+    }));
+    res.json({ referenceImageUrl: character.referenceImageUrl, images: withRights });
   } catch (err) {
     return routeError(res, err, "Failed to list images", "GET /characters/:id/images");
   }
@@ -301,7 +350,7 @@ router.post("/:id/reference-image", async (req, res) => {
           await tx.characterImage.update({ where: { id: previous.id }, data: { status: "replaced_reference" } });
         } else {
           await tx.characterImage.create({
-            data: { characterId: character.id, imageUrl: character.referenceImageUrl, status: "replaced_reference", source: "manual" },
+            data: { characterId: character.id, imageUrl: character.referenceImageUrl, status: "replaced_reference", source: "manual", fingerprint: fingerprintUrl(character.referenceImageUrl) },
           });
         }
       }
@@ -311,6 +360,82 @@ router.post("/:id/reference-image", async (req, res) => {
     res.json(result);
   } catch (err) {
     return routeError(res, err, "Failed to set reference image", "POST /characters/:id/reference-image");
+  }
+});
+
+// POST /api/characters/:id/images { imageUrl } — register an existing image as a candidate
+router.post("/:id/images", async (req, res) => {
+  try {
+    const character = await req.prisma.character.findUnique({ where: { id: req.params.id } });
+    if (!character) throw notFound();
+    const url = req.body?.imageUrl;
+    const check = typeof url === "string" && url.length <= 2048 ? checkExternalUrl(url) : { ok: false, reason: "imageUrl is required" };
+    if (!check.ok) throw new ApiError("UNSAFE_URL", 400, `image URL refused: ${check.reason}`);
+    const image = await req.prisma.characterImage.create({
+      data: { characterId: character.id, imageUrl: url, status: "candidate", source: "manual", fingerprint: fingerprintUrl(url) },
+    });
+    res.status(201).json(image);
+  } catch (err) {
+    return routeError(res, err, "Failed to add image", "POST /characters/:id/images");
+  }
+});
+
+// ─── Versions ───────────────────────────────────────────────
+
+router.get("/:id/versions", async (req, res) => {
+  try {
+    const character = await req.prisma.character.findUnique({ where: { id: req.params.id } });
+    if (!character) throw notFound();
+    const versions = await req.prisma.characterVersion.findMany({
+      where: { characterId: character.id }, orderBy: { version: "desc" }, take: listLimit(req),
+    });
+    const draft = snapshotOf(character);
+    const latest = versions[0];
+    // The draft differs from the latest version if identity/styling changed
+    // (reference changes show up at the next publish).
+    const draftChanged = !latest || contentHashOf({ ...draft, references: [] }) !==
+      contentHashOf({ identity: latest.identity, styling: latest.styling, references: [] });
+    res.json({ publishedVersionId: character.publishedVersionId, draftChanged, versions });
+  } catch (err) {
+    return routeError(res, err, "Failed to list versions", "GET /characters/:id/versions");
+  }
+});
+
+router.get("/:id/versions/:version", async (req, res) => {
+  try {
+    const n = Number(req.params.version);
+    if (!Number.isInteger(n) || n < 1) throw new ApiError("VALIDATION_FAILED", 400, "version must be a positive whole number");
+    const v = await req.prisma.characterVersion.findUnique({ where: { characterId_version: { characterId: req.params.id, version: n } } });
+    if (!v) throw new ApiError("NOT_FOUND", 404, "Version not found");
+    res.json(v);
+  } catch (err) {
+    return routeError(res, err, "Failed to read version", "GET /characters/:id/versions/:version");
+  }
+});
+
+// POST /api/characters/:id/versions { note? } — publish the current draft (immutable)
+router.post("/:id/versions", async (req, res) => {
+  try {
+    const note = req.body?.note;
+    if (note !== undefined && (typeof note !== "string" || note.length > 500)) {
+      throw new ApiError("VALIDATION_FAILED", 400, "note must be a string of at most 500 characters");
+    }
+    const { version, unchanged } = await publishVersion(req.prisma, req.params.id, { by: req.principal?.id, note });
+    res.status(unchanged ? 200 : 201).json({ version, unchanged });
+  } catch (err) {
+    return routeError(res, err, "Failed to publish version", "POST /characters/:id/versions");
+  }
+});
+
+// POST /api/characters/:id/versions/:version/restore — copy a version into the draft
+router.post("/:id/versions/:version/restore", async (req, res) => {
+  try {
+    const n = Number(req.params.version);
+    if (!Number.isInteger(n) || n < 1) throw new ApiError("VALIDATION_FAILED", 400, "version must be a positive whole number");
+    const character = await restoreDraft(req.prisma, req.params.id, n);
+    res.json({ character, restoredFrom: n });
+  } catch (err) {
+    return routeError(res, err, "Failed to restore version", "POST /characters/:id/versions/:version/restore");
   }
 });
 
@@ -324,14 +449,36 @@ router.post("/:id/generate-video", async (req, res) => {
     if (!["5", "10"].includes(duration)) {
       return sendError(res, new ApiError("VALIDATION_FAILED", 400, "duration must be 5 or 10"));
     }
+    // WHY explicit: sending the reference image to a provider is a decision
+    // that needs the adapter to support it and the image's rights to allow it.
+    const source = req.body?.source ?? "text";
+    if (!["text", "reference"].includes(source)) {
+      return sendError(res, new ApiError("VALIDATION_FAILED", 400, "source must be text or reference"));
+    }
+    let imageUrl = null;
+    if (source === "reference") {
+      if (!req.generationGate.capabilities("video")?.sourceImage) {
+        throw new ApiError("REFERENCE_CONDITIONING_UNSUPPORTED", 409, "The selected video provider does not accept a source image");
+      }
+      if (!character.referenceImageUrl) throw new ApiError("REFERENCE_NOT_CLEARED", 409, "This character has no reference image");
+      const ref = await req.prisma.characterImage.findFirst({
+        where: { characterId: character.id, imageUrl: character.referenceImageUrl }, orderBy: { createdAt: "desc" },
+      });
+      const clearance = ref ? await clearanceFor(req.prisma, ref.id, "provider_input") : { cleared: false, missing: ["tracked reference image"] };
+      if (!clearance.cleared) {
+        throw new ApiError("REFERENCE_NOT_CLEARED", 409,
+          "The reference image may not be sent to a provider yet", { missing: clearance.missing });
+      }
+      imageUrl = character.referenceImageUrl;
+    }
     const result = await generateVideo(
       req.generationGate,
       {
-        imageUrl: character.referenceImageUrl || null,
+        imageUrl,
         prompt: buildPromptFromCharacter(character),
         options: { aspectRatio: character.aspectRatio === "9:16" ? "9:16" : "16:9", duration },
       },
-      generationKeys(req, character, "video")
+      generationKeys(req, character, `video-${source}`)
     );
     res.json({ videoUrl: result.videoUrl, character });
   } catch (err) {

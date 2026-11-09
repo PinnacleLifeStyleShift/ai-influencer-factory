@@ -4,6 +4,7 @@ import helmet from "helmet";
 import morgan from "morgan";
 
 import characterRoutes from "./routes/characters.js";
+import characterImageRoutes from "./routes/characterImages.js";
 import contentRoutes from "./routes/content.js";
 import campaignRoutes from "./routes/campaigns.js";
 import dashboardRoutes from "./routes/dashboard.js";
@@ -106,6 +107,7 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
 
   api.use("/auth", authRoutes({ sessions: sessionStore }));
   api.use("/characters", characterRoutes);
+  api.use("/character-images", characterImageRoutes);
   api.use("/content", contentRoutes);
   api.use("/campaigns", campaignRoutes);
   api.use("/dashboard", dashboardRoutes);

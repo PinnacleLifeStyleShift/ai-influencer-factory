@@ -20,6 +20,10 @@ const RULES = [
   { method: "POST", path: /^\/characters\/[^/]+\/generate-(image|video)$/, needs: ["generate", "spend"] },
   { method: "POST", path: /^\/pipeline\/generate-content$/, needs: ["generate", "spend"] },
   { method: "POST", path: /^\/characters\/[^/]+\/reference-image$/, needs: ["references"] },
+  { method: "POST", path: /^\/characters\/[^/]+\/images$/, needs: ["references"] },
+  // WHY admin: approving rights is what lets an image reach a provider.
+  { method: "POST", path: /^\/character-images\/[^/]+\/rights\/approve$/, needs: ["admin"] },
+  { method: "POST", path: /^\/character-images\/[^/]+\/rights$/, needs: ["references"] },
   { method: "POST", path: /^\/pipeline\/[^/]+\/(approve|reject)$/, needs: ["approve"] },
   { method: "POST", path: /^\/pipeline\/[^/]+\/schedule$/, needs: ["schedule"] },
   { method: "GET", path: /^\/system\//, needs: ["admin"] },

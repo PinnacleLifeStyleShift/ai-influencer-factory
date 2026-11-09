@@ -246,12 +246,14 @@ async function klingTextToVideo(prompt, options = {}) {
 /** Keyed by "provider:model". Presence here does not mean approved. */
 export const videoAdapters = {
   "fal:kling-v2.1-i2v": {
+    capabilities: { referenceConditioning: false, sourceImage: true },
     generate: async ({ imageUrl, prompt, options }) => {
       if (!imageUrl) throw new ProviderError("fal:kling-v2.1-i2v requires a source image", { submitted: false });
       return { videoUrl: await generateWithFal(imageUrl, prompt, options) };
     },
   },
   "kling:kling-v2-1": {
+    capabilities: { referenceConditioning: false, sourceImage: true },
     generate: async ({ imageUrl, prompt, options }) =>
       imageUrl
         ? { videoUrl: await generateWithKling(imageUrl, prompt, options) }

@@ -1,4 +1,5 @@
 import { createPrismaClient } from "../src/lib/prisma.js";
+import { publishVersion } from "../src/services/characterVersions.js";
 
 /**
  * Integration tests run only against the disposable database created by
@@ -27,7 +28,7 @@ export function newClient() {
 }
 
 const TABLES = [
-  "audit_events", "sessions", "generation_reservations", "generation_applications", "character_images", "campaign_submissions", "campaigns", "pipeline_items",
+  "rights_records", "character_versions", "audit_events", "sessions", "generation_reservations", "generation_applications", "character_images", "campaign_submissions", "campaigns", "pipeline_items",
   "scripts", "trends", "content", "characters",
 ];
 
@@ -46,10 +47,13 @@ export async function makeCharacter(prisma, overrides = {}) {
 /** A pipeline item ready for review (synthetic URLs on example.test). */
 export async function makeReviewItem(prisma, overrides = {}) {
   const character = await makeCharacter(prisma);
+  // Pinned to a published version, like every item created by generate-script.
+  const version = await publishVersion(prisma, character.id, { by: "test" });
   return prisma.pipelineItem.create({
     data: {
       stage: "review",
       characterId: character.id,
+      characterVersionId: version.version.id,
       imageUrl: "https://example.test/still.png",
       caption: "Synthetic caption",
       hashtags: "#synthetic",

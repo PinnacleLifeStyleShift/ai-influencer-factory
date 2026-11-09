@@ -14,6 +14,8 @@ import { generateScript } from "../services/scriptGeneration.js";
 import { generateCaption } from "../services/captionGeneration.js";
 import { buildPromptFromCharacter } from "../services/imageGeneration.js";
 import { requestHash } from "../services/spendLedger.js";
+import { ensurePublishedVersion, promptSourceOf, promptHash } from "../services/characterVersions.js";
+import { clearanceFor } from "../services/rights.js";
 
 const router = Router();
 
@@ -215,8 +217,11 @@ router.post("/generate-script", handle("POST /pipeline/generate-script", async (
 
   // The script's format platform is NOT the posting destination. The
   // destination stays unset until the operator chooses it explicitly.
+  // Pin the character version the script was written for; later edits or
+  // versions of the character never change this item's inputs.
+  const version = await ensurePublishedVersion(req.prisma, character, { by: req.principal?.id });
   const pipelineItem = await req.prisma.pipelineItem.create({
-    data: { stage: "draft", scriptId: script.id, characterId, platform: null },
+    data: { stage: "draft", scriptId: script.id, characterId, platform: null, characterVersionId: version.id },
   });
 
   if (trendId) await req.prisma.trend.update({ where: { id: trendId }, data: { status: "scripted" } });
@@ -254,9 +259,11 @@ router.post("/generate-script", handle("POST /pipeline/generate-script", async (
  *  6. Release the claim; keep the workflow key on failure so a retry resumes.
  */
 router.post("/generate-content", handle("POST /pipeline/generate-content", async (req, res) => {
-  const { pipelineItemId, type = "image" } = req.body || {};
+  const { pipelineItemId, type = "image", referenceMode = "none" } = req.body || {};
   if (!pipelineItemId || typeof pipelineItemId !== "string") throw invalid("pipelineItemId is required");
   if (!["image", "video"].includes(type)) throw invalid(`Unsupported content type: ${String(type).slice(0, 20)}`);
+  // "required": the pinned references must actually be sent to the provider.
+  if (!["none", "required"].includes(referenceMode)) throw invalid("referenceMode must be none or required");
   const clientKey = readIdempotencyKey(req);
   const gate = req.generationGate;
   const prisma = req.prisma;
@@ -274,7 +281,38 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
   // (1) Blocks before ANY write, reservation or provider call if any stage is not permitted.
   gate.preflightAll(kinds);
 
-  const hash = requestHash({ op: "pipeline.generate-content", pipelineItemId, type });
+  // The pinned version, or (legacy items) the published one, pinned on apply.
+  const version = item.characterVersionId
+    ? await prisma.characterVersion.findUnique({ where: { id: item.characterVersionId } })
+    : await ensurePublishedVersion(prisma, item.character, { by: req.principal?.id });
+  if (!version) throw new ApiError("VERSION_MISSING", 409, "The character version this item is pinned to no longer exists");
+
+  // Reference conditioning is checked before any claim or spend.
+  // WHY: a stored reference proves nothing if it is never sent, and a
+  // reference may only be sent once its rights allow it.
+  let referencesSent = [];
+  let references = [];
+  if (referenceMode === "required") {
+    if (!gate.capabilities("image")?.referenceConditioning) {
+      throw new ApiError("REFERENCE_CONDITIONING_UNSUPPORTED", 409,
+        "The selected image provider does not send reference images, so identity conditioning is not possible");
+    }
+    const pinned = Array.isArray(version.references) ? version.references : [];
+    if (!pinned.length) throw new ApiError("REFERENCE_NOT_CLEARED", 409, "This character version has no reference images pinned");
+    const blocked = [];
+    for (const ref of pinned) {
+      const c = await clearanceFor(prisma, ref.imageId, "provider_input");
+      if (!c.cleared) blocked.push({ imageId: ref.imageId, missing: c.missing });
+    }
+    if (blocked.length) {
+      throw new ApiError("REFERENCE_NOT_CLEARED", 409, "Reference images may not be sent to a provider yet", { blocked });
+    }
+    const images = await prisma.characterImage.findMany({ where: { id: { in: pinned.map((r) => r.imageId) } } });
+    references = images.map((img) => ({ url: img.imageUrl, fingerprint: img.fingerprint }));
+    referencesSent = references.map((r) => r.fingerprint);
+  }
+
+  const hash = requestHash({ op: "pipeline.generate-content", pipelineItemId, type, referenceMode });
   const resumable = item.activeWorkflowKey?.startsWith(`${type}|`) ? item.activeWorkflowKey : null;
   const workflowKey = clientKey
     ? `${type}|client:${clientKey}`
@@ -297,7 +335,8 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
     throw new ApiError("REVISION_CONFLICT", 409, "The item changed while this request was processed; reload and retry");
   }
 
-  const prompt = buildPromptFromCharacter(item.character);
+  // From the pinned version, never the live draft.
+  const prompt = buildPromptFromCharacter(promptSourceOf(version));
   const motionPrompt = item.script
     ? `${item.script.hook || ""} ${item.script.body || ""}`.trim().slice(0, 500)
     : "Subtle natural movement, gentle head turn, cinematic lighting";
@@ -338,7 +377,7 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
     await prisma.$transaction(async (tx) => {
       const { count } = await tx.pipelineItem.updateMany({
         where: { id: item.id, generationClaim: token, revision: expectedRevision, stage: { not: "scheduled" } },
-        data: invalidatingChange(fields(mediaUrl), "content_generated"),
+        data: invalidatingChange({ ...fields(mediaUrl), characterVersionId: version.id }, "content_generated"),
       });
       if (count !== 1) {
         throw new ApiError("GENERATION_SUPERSEDED", 409,
@@ -346,7 +385,14 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
           { reservationId: r.reservationId, result: { [kind === "image" ? "imageUrl" : "videoUrl"]: mediaUrl } });
       }
       await tx.generationApplication.create({
-        data: { reservationId: r.reservationId, pipelineItemId: item.id, kind, mediaUrl, revision: expectedRevision + 1 },
+        data: {
+          reservationId: r.reservationId, pipelineItemId: item.id, kind, mediaUrl, revision: expectedRevision + 1,
+          // Actual inputs: what was really sent, not what was stored.
+          characterVersionId: version.id,
+          promptHash: promptHash(kind === "image" ? prompt : motionPrompt),
+          referencesSent: kind === "image" ? referencesSent : [],
+          conditioning: kind === "image" && referencesSent.length ? "references_sent" : "none",
+        },
       });
     });
     expectedRevision += 1;
@@ -359,7 +405,11 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
       kind: "image",
       idempotencyKey: `${workflowKey}:image`,
       requestHash: hash,
-      input: { prompt, options: { aspectRatio: item.character.aspectRatio || "9:16" } },
+      input: {
+        prompt,
+        options: { aspectRatio: version.styling?.aspectRatio || "9:16" },
+        ...(references.length ? { references } : {}),
+      },
       // A new still invalidates any video made from the old one, and any approval.
       onResult: (r) => applyResult("image", r, (url) => ({ imageUrl: url, videoUrl: null })),
     });

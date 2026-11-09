@@ -55,6 +55,9 @@ model Character {
   scripts           Script[]
   pipelineItems     PipelineItem[]
   images            CharacterImage[]
+  versions          CharacterVersion[]
+  // Latest published version (the row's own fields are the editable draft).
+  publishedVersionId String?  @map("published_version_id")
 
   @@map("characters")
 }
@@ -74,6 +77,14 @@ model CharacterImage {
   model           String?
   reservationId   String?  @unique @map("reservation_id")
   generationIndex Int?     @map("generation_index")
+  // Identity of the image: sha256 of its bytes when known (checksum); always
+  // a sha256 of its URL (fingerprint), since media is not stored yet.
+  fingerprint     String?
+  checksum        String?
+  // What produced a generated image: version, prompt hash, references sent.
+  characterVersionId String? @map("character_version_id")
+  generationInputs   Json?   @map("generation_inputs")
+  rights          RightsRecord[]
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
@@ -244,6 +255,8 @@ model PipelineItem {
   // Generation claim (fencing token). Set atomically before any spend; while
   // it is live, scheduling, approval and edits are refused, and a result is
   // applied only by the holder of this exact token at the expected revision.
+  // Character version this item was written for; part of the approved snapshot.
+  characterVersionId  String?   @map("character_version_id")
   generationClaim     String?   @map("generation_claim")
   generationClaimedAt DateTime? @map("generation_claimed_at")
 
@@ -289,6 +302,12 @@ model GenerationApplication {
   mediaUrl       String   @map("media_url")
   revision       Int      // item revision produced by this application
   appliedAt      DateTime @default(now()) @map("applied_at")
+  // Actual inputs: version used, sha256 of the prompt (not the prompt), and
+  // the fingerprints of references actually sent ("none" when not sent).
+  characterVersionId String? @map("character_version_id")
+  promptHash         String? @map("prompt_hash")
+  referencesSent     String[] @default([]) @map("references_sent")
+  conditioning       String  @default("none")
 
   @@index([pipelineItemId])
   @@map("generation_applications")
@@ -336,4 +355,53 @@ model AuditEvent {
   @@index([targetId])
   @@index([actorId])
   @@map("audit_events")
+}
+
+// ─── CHARACTER VERSIONS ──────────────────────────────────────
+// Immutable published snapshots of a character. identity = what must stay
+// the same across content; styling = per-shot defaults that may vary.
+
+model CharacterVersion {
+  id           String   @id @default(cuid())
+  characterId  String   @map("character_id")
+  character    Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  version      Int
+  identity     Json
+  styling      Json
+  // [{ imageId, fingerprint, checksum }] pinned at publish time
+  references   Json     @default("[]")
+  contentHash  String   @map("content_hash")
+  publishedBy  String?  @map("published_by")
+  publishedAt  DateTime @default(now()) @map("published_at")
+  note         String?
+
+  @@unique([characterId, version])
+  @@map("character_versions")
+}
+
+// ─── RIGHTS RECORDS ──────────────────────────────────────────
+// Append-only rights/consent records for a reference image; the newest one
+// applies. A free-text checkbox is not enough: basis, holder, permitted uses
+// and (for a real person's likeness) a consent reference are recorded, and
+// the owner approves the record before any provider may receive the image.
+
+model RightsRecord {
+  id                  String    @id @default(cuid())
+  imageId             String    @map("image_id")
+  image               CharacterImage @relation(fields: [imageId], references: [id], onDelete: Cascade)
+  basis               String    // generated_synthetic | owned_original | licensed | consented_likeness
+  holder              String
+  permittedUses       String[]  @map("permitted_uses") // provider_input | publication | training
+  likenessOfRealPerson Boolean  @default(false) @map("likeness_of_real_person")
+  consentReference    String?   @map("consent_reference")
+  licenseReference    String?   @map("license_reference")
+  expiresAt           DateTime? @map("expires_at")
+  notes               String?
+  recordedBy          String    @map("recorded_by")
+  recordedAt          DateTime  @default(now()) @map("recorded_at")
+  approvedBy          String?   @map("approved_by")
+  approvedAt          DateTime? @map("approved_at")
+
+  @@index([imageId, recordedAt])
+  @@map("rights_records")
 }

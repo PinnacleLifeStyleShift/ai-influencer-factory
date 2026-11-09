@@ -253,13 +253,24 @@ async function pollHiggsfield(jobSetId, apiKey, secret, maxAttempts = 30) {
 // Adapter registry and public API
 // ---------------------------------------------------------------------------
 
-/** Keyed by "provider:model". Presence here does not mean approved. */
+/**
+ * Keyed by "provider:model". Presence here does not mean approved.
+ *
+ * capabilities declare what an adapter really sends. WHY: storing a reference
+ * URL proves nothing about identity consistency if the adapter never sends
+ * it; requests that need a capability are refused before any spend.
+ *  - referenceConditioning: reference images are sent to steer identity
+ *  - sourceImage: an input image is animated/edited (image-to-video)
+ * The recovered Higgsfield and Leonardo calls are text-to-image only.
+ */
 export const imageAdapters = {
   "higgsfield:soul": {
+    capabilities: { referenceConditioning: false, sourceImage: false },
     generate: ({ prompt, options }) =>
       generateWithHiggsfield(prompt, options).then((imageUrl) => ({ imageUrl })),
   },
   "leonardo:phoenix": {
+    capabilities: { referenceConditioning: false, sourceImage: false },
     generate: ({ prompt, options }) =>
       generateWithLeonardo(prompt, options).then((imageUrl) => ({ imageUrl })),
   },

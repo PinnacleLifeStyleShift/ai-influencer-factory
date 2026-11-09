@@ -76,8 +76,17 @@ export function createGenerationGate({ env = process.env, ledger, adapters, log 
     return (configured === undefined ? DEFAULT_SELECTION[kind] ?? "" : configured).trim();
   }
 
+  /** Declared capabilities of the selected adapter (no approval implied). */
+  function capabilities(kind) {
+    const selected = selectionFor(kind);
+    const adapter = selected ? adapters[kind]?.[selected] : null;
+    if (!adapter) return null;
+    return { referenceConditioning: false, sourceImage: false, ...(adapter.capabilities || {}) };
+  }
+
   function describe() {
     return {
+      capabilities: { image: capabilities("image"), video: capabilities("video") },
       liveCallsEnabled: env.LIVE_PROVIDER_CALLS === "enabled",
       ledger: ledger.kind || "custom",
       ledgerDurable: Boolean(ledger.durable),
@@ -257,5 +266,5 @@ export function createGenerationGate({ env = process.env, ledger, adapters, log 
     return result;
   }
 
-  return { run, runWorkflow, preflight, preflightAll, describe, ledger };
+  return { run, runWorkflow, preflight, preflightAll, describe, capabilities, ledger };
 }
