@@ -21,6 +21,8 @@ import {
 } from "../services/scriptVersions.js";
 import { measurePackage } from "../services/shotPlan.js";
 import { checkClaims } from "../services/claims.js";
+import { createJob } from "../services/generationJobs.js";
+import { isProcessDeath } from "../services/generationGate.js";
 
 const router = Router();
 
@@ -272,7 +274,7 @@ router.post("/generate-script", handle("POST /pipeline/generate-script", async (
  *  6. Release the claim; keep the workflow key on failure so a retry resumes.
  */
 router.post("/generate-content", handle("POST /pipeline/generate-content", async (req, res) => {
-  const { pipelineItemId, type = "image", referenceMode = "none", shotIndex } = req.body || {};
+  const { pipelineItemId, type = "image", referenceMode = "none", shotIndex, confirmReplaceApproved } = req.body || {};
   if (shotIndex !== undefined && (!Number.isInteger(shotIndex) || shotIndex < 0 || shotIndex > 99)) throw invalid("shotIndex must be a whole number");
   if (!pipelineItemId || typeof pipelineItemId !== "string") throw invalid("pipelineItemId is required");
   if (!["image", "video"].includes(type)) throw invalid(`Unsupported content type: ${String(type).slice(0, 20)}`);
@@ -289,11 +291,16 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
   if (!item) throw notFound();
   assertNotScheduled(item);
   if (claimIsLive(item)) throw generationInProgress();
+  // WHY: regenerating approved content discards that approval; it must be a
+  // deliberate choice, never a side effect of a stray click or retry.
+  if (item.stage === "approved" && confirmReplaceApproved !== true) {
+    throw new ApiError("APPROVED_CONTENT", 409, "This item is approved; regenerating clears the approval. Send confirmReplaceApproved: true to proceed");
+  }
 
   const needsImage = type === "image" || !item.imageUrl;
   const kinds = type === "image" ? ["image"] : needsImage ? ["image", "video"] : ["video"];
   // (1) Blocks before ANY write, reservation or provider call if any stage is not permitted.
-  gate.preflightAll(kinds);
+  const checks = gate.preflightAll(kinds);
 
   // The pinned version, or (legacy items) the published one, pinned on apply.
   const version = item.characterVersionId
@@ -372,6 +379,8 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
 
   let expectedRevision = item.revision;
   const outcomes = [];
+  let journal = null;
+  const stepIndexOf = (kind) => kinds.indexOf(kind);
 
   // (4)/(5) Fenced, recorded application of one step's result.
   async function applyResult(kind, r, fields) {
@@ -403,6 +412,7 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
         { reservationId: r.reservationId });
     }
 
+    await gate.fault("beforeApply");
     await prisma.$transaction(async (tx) => {
       const { count } = await tx.pipelineItem.updateMany({
         where: { id: item.id, generationClaim: token, revision: expectedRevision, stage: { not: "scheduled" } },
@@ -425,6 +435,7 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
       });
     });
     expectedRevision += 1;
+    await journal?.markApplied(stepIndexOf(kind)).catch((e) => console.error("journal markApplied failed:", e?.message));
     outcomes.push({ ...recorded, applied: true, recovered: r.replayed === true });
   }
 
@@ -475,21 +486,35 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
 
   // (3)/(6)
   let finished = false;
+  let died = false;
+  let failureCode = null;
   let keepWorkflowKey = workflowKey; // on failure: a retry resumes this workflow
   try {
-    await gate.runWorkflow(steps);
+    // Durable job journal: written before each irreversible step.
+    journal = await createJob(prisma, {
+      kind: "pipeline.generate-content", targetType: "pipeline_item", targetId: item.id, workflowKey, requestHash: hash,
+      steps: steps.map((st, i) => ({ kind: st.kind, provider: checks[i].provider, model: checks[i].model, idempotencyKey: st.idempotencyKey })),
+      by: req.principal?.id,
+    });
+    await gate.runWorkflow(steps, { hooks: journal.hooks });
     finished = true;
   } catch (err) {
+    // A (simulated) process death leaves everything exactly as it was.
+    if (isProcessDeath(err)) { died = true; throw err; }
+    failureCode = err instanceof ApiError ? err.code : "INTERNAL_ERROR";
     // A superseded result must not become recoverable later: put back the
     // workflow key that was current before this request.
     if (err instanceof ApiError && err.code === "GENERATION_SUPERSEDED") keepWorkflowKey = priorWorkflowKey;
     throw err;
   } finally {
+    if (!died) {
+    await journal?.finish(failureCode).catch((e) => console.error("journal finish failed:", e?.message));
     // Only our own claim is released (a taken-over or cleared claim is left alone).
     await prisma.pipelineItem.updateMany({
       where: { id: item.id, generationClaim: token },
       data: { generationClaim: null, generationClaimedAt: null, activeWorkflowKey: finished ? null : keepWorkflowKey },
     }).catch((e) => console.error("generate-content: claim release failed:", e?.message));
+    }
   }
 
   const updated = await prisma.pipelineItem.findUnique({ where: { id: item.id }, include: ITEM_INCLUDE });
@@ -501,6 +526,7 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
     videoUrl: updated.videoUrl,
     replayed: outcomes.length > 0 && outcomes.every((o) => o.replayed),
     results: outcomes,
+    jobId: journal?.jobId || null,
   });
 }));
 

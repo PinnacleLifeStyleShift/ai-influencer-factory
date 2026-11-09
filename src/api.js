@@ -157,6 +157,17 @@ export const characterImages = {
   approveRights: (imageId, recordId) => request(`/api/character-images/${imageId}/rights/approve`, { method: "POST", body: JSON.stringify({ recordId }) }),
 };
 
+// ─── Generation jobs / reconciliation ─────────────────────
+export const generationJobs = {
+  list: (params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return request(`/api/generation-jobs${qs ? `?${qs}` : ""}`);
+  },
+  recover: () => request("/api/generation-jobs/recover", { method: "POST", body: "{}" }),
+  check: (stepId) => request(`/api/generation-jobs/steps/${stepId}/check`, { method: "POST", body: "{}" }),
+  resolve: (stepId, data) => request(`/api/generation-jobs/steps/${stepId}/resolve`, { method: "POST", body: JSON.stringify(data) }),
+};
+
 // ─── Content ──────────────────────────────────────────────
 export const content = {
   list: (params = {}) => {

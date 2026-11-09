@@ -76,10 +76,22 @@ export function fakePrisma(seed = {}) {
       return { count };
     },
   };
+  // Minimal job journal stand-ins (unit tests only; real behaviour is tested on Postgres).
+  const jobs = new Map(); const steps = [];
+  const generationJob = {
+    create: async ({ data }) => { const id = `job-${jobs.size + 1}`; const row = { id, ...data, steps: undefined }; jobs.set(id, row);
+      (data.steps?.create || []).forEach((st) => steps.push({ id: `step-${steps.length + 1}`, jobId: id, state: "pending", ...st })); return row; },
+    updateMany: async ({ where, data }) => { const j = jobs.get(where.id); if (!j) return { count: 0 }; Object.assign(j, data); return { count: 1 }; },
+  };
+  const generationStep = {
+    updateMany: async ({ where, data }) => { const st = steps.find((x) => x.jobId === where.jobId && x.index === where.index); if (!st) return { count: 0 }; Object.assign(st, data); return { count: 1 }; },
+    findMany: async ({ where }) => steps.filter((x) => x.jobId === where.jobId),
+    findFirst: async ({ where }) => steps.find((x) => x.jobId === where.jobId && x.index === where.index) || null,
+  };
   const auditRows = [];
   const auditEvent = { create: async ({ data }) => { auditRows.push(data); return data; } };
   return {
-    db, calls, session, sessionRows: sessions, auditEvent, auditRows,
+    db, calls, session, sessionRows: sessions, auditEvent, auditRows, generationJob, generationStep,
     character: model("character"),
     content: model("content"),
     pipelineItem: model("pipelineItem"),

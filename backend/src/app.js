@@ -10,6 +10,7 @@ import campaignRoutes from "./routes/campaigns.js";
 import dashboardRoutes from "./routes/dashboard.js";
 import pipelineRoutes from "./routes/pipeline.js";
 import packageRoutes from "./routes/packages.js";
+import { generationJobRoutes } from "./routes/generationJobs.js";
 
 import { buildCorsOptions } from "./lib/cors.js";
 import { sendError, ApiError, routeError } from "./lib/errors.js";
@@ -22,6 +23,7 @@ import { createAuditLog } from "./services/audit.js";
 import { listLimit } from "./lib/validate.js";
 import { rateLimit } from "./middleware/rateLimit.js";
 import { createGenerationGate, selectLedger } from "./services/generationGate.js";
+import { createPrismaLedger } from "./services/spendLedger.js";
 import { imageAdapters } from "./services/imageGeneration.js";
 import { videoAdapters } from "./services/videoGeneration.js";
 
@@ -42,6 +44,11 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
       ledger: selectLedger(env, prisma),
       adapters: { image: imageAdapters, video: videoAdapters },
     });
+
+  // Jobs and their reservations live in Postgres, so reconciliation and
+  // recovery always settle money in the durable ledger, even if the gate was
+  // later switched back to the (refusing) in-memory one.
+  const jobLedger = generationGate.ledger?.durable || !prisma?.generationReservation ? generationGate.ledger : createPrismaLedger(prisma);
 
   const app = express();
   app.disable("x-powered-by");
@@ -112,11 +119,14 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
   api.use("/content", contentRoutes);
   api.use("/campaigns", campaignRoutes);
   api.use("/dashboard", dashboardRoutes);
+  api.use("/generation-jobs", generationJobRoutes({ gate: generationGate, ledger: jobLedger }));
   api.use("/pipeline", packageRoutes);
   api.use("/pipeline", pipelineRoutes);
   api.use((_req, res) => sendError(res, new ApiError("NOT_FOUND", 404, "Not found")));
 
   app.use("/api", api);
+  app.locals.generationGate = generationGate;
+  app.locals.jobLedger = jobLedger;
 
   // eslint-disable-next-line no-unused-vars
   app.use((err, _req, res, _next) => {

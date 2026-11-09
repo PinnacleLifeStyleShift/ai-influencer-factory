@@ -31,8 +31,28 @@ export function usdToMicros(value) {
   return Number(whole) * MICROS_PER_USD + Number(frac.padEnd(6, "0"));
 }
 
-const dayKey = (d) => d.toISOString().slice(0, 10);
-const monthKey = (d) => d.toISOString().slice(0, 7);
+/**
+ * Cap periods are calendar days/months in the configured cap timezone
+ * (WHY: "daily cap" should match the owner's day, not UTC's). Rows store the
+ * period keys they were counted in.
+ */
+export function periodKeys(date, timeZone = "UTC") {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" })
+    .formatToParts(date).map((p) => [p.type, p.value]));
+  return { day: `${parts.year}-${parts.month}-${parts.day}`, month: `${parts.year}-${parts.month}` };
+}
+export function isValidTimeZone(tz) {
+  if (typeof tz !== "string" || !tz) return false;
+  try { new Intl.DateTimeFormat("en-US", { timeZone: tz }); return true; } catch { return false; }
+}
+/** Settlement amounts: null (keep the estimate) or a non-negative integer of micro-units. */
+function assertActual(actualMicros) {
+  if (actualMicros === null || actualMicros === undefined) return;
+  if (!Number.isInteger(actualMicros) || actualMicros < 0) {
+    throw new ApiError("VALIDATION_FAILED", 400, "An actual cost must be a non-negative amount");
+  }
+}
+const SETTLEABLE = ["reserved", "outcome_unknown"];
 
 /** Shared decision logic for an existing row with the same idempotency key. */
 function existingKeyOutcome(existing, entry) {
@@ -95,15 +115,17 @@ export function createMemoryLedger({ durable = false, now = () => new Date() } =
         else { out.push(null); toReserve.push(e); }
       }
       const at = now();
-      assertCaps(toReserve, caps, committed((r) => r.day === dayKey(at)), committed((r) => r.month === monthKey(at)));
+      const { day, month } = periodKeys(at, caps.timezone);
+      assertCaps(toReserve, caps, committed((r) => r.day === day), committed((r) => r.month === month));
       for (let i = 0; i < entries.length; i++) {
         if (out[i]) continue;
         const e = entries[i];
         const id = crypto.randomUUID();
         rows.set(id, {
           id, provider: e.provider, model: e.model, amountMicros: e.amountMicros, actualMicros: null,
-          state: "reserved", day: dayKey(at), month: monthKey(at),
+          state: "reserved", day, month,
           idempotencyKey: e.idempotencyKey || null, requestHash: e.requestHash || null, result: null,
+          currency: e.currency || "USD", priceVersion: e.priceVersion || null, capTimezone: caps.timezone || null,
         });
         if (e.idempotencyKey) byKey.set(e.idempotencyKey, id);
         out[i] = { reservationId: id };
@@ -112,8 +134,10 @@ export function createMemoryLedger({ durable = false, now = () => new Date() } =
     },
 
     async settle(id, actualMicros, result = null) {
+      assertActual(actualMicros);
       const r = rows.get(id);
-      if (!r) return;
+      // Settles once, and only an open reservation: recorded spend never moves back.
+      if (!r || !SETTLEABLE.includes(r.state)) return;
       r.state = "settled";
       r.actualMicros = Number.isInteger(actualMicros) ? actualMicros : r.amountMicros;
       r.result = result;
@@ -130,9 +154,22 @@ export function createMemoryLedger({ durable = false, now = () => new Date() } =
       const r = rows.get(id);
       return r ? { ...r } : null;
     },
-    async totals() {
-      const at = now();
-      return { dayMicros: committed((r) => r.day === dayKey(at)), monthMicros: committed((r) => r.month === monthKey(at)) };
+    async totals(timeZone = "UTC") {
+      const { day, month } = periodKeys(now(), timeZone);
+      return { dayMicros: committed((r) => r.day === day), monthMicros: committed((r) => r.month === month) };
+    },
+    async findByKey(key) {
+      const id = byKey.get(key);
+      return id ? { ...rows.get(id) } : null;
+    },
+    /** Operator/provider resolution of an open or uncertain reservation. */
+    async resolve(id, { charged, actualMicros = null, result = null }) {
+      assertActual(actualMicros);
+      const r = rows.get(id);
+      if (!r || !SETTLEABLE.includes(r.state)) throw new ApiError("NOT_RESOLVABLE", 409, "This reservation is not open or uncertain");
+      if (charged) { r.state = "settled"; r.actualMicros = Number.isInteger(actualMicros) ? actualMicros : r.amountMicros; r.result = result; }
+      else r.state = "released";
+      return { ...r };
     },
   };
 }
@@ -186,8 +223,7 @@ export function createPrismaLedger(prisma, { now = () => new Date() } = {}) {
           }
         }
         const at = now();
-        const day = dayKey(at);
-        const month = monthKey(at);
+        const { day, month } = periodKeys(at, caps.timezone);
         assertCaps(toReserve, caps, await sumWhere(tx, { day }), await sumWhere(tx, { month }));
 
         for (let i = 0; i < entries.length; i++) {
@@ -196,6 +232,7 @@ export function createPrismaLedger(prisma, { now = () => new Date() } = {}) {
           const data = {
             provider: e.provider, model: e.model, amountMicros: BigInt(e.amountMicros), actualMicros: null,
             state: "reserved", day, month, requestHash: e.requestHash || null, result: undefined,
+            currency: e.currency || "USD", priceVersion: e.priceVersion || null, capTimezone: caps.timezone || null,
           };
           const row = reuse.has(i)
             ? await tx.generationReservation.update({ where: { id: reuse.get(i) }, data: { ...data, result: null } })
@@ -207,10 +244,12 @@ export function createPrismaLedger(prisma, { now = () => new Date() } = {}) {
     },
 
     async settle(id, actualMicros, result = null) {
+      assertActual(actualMicros);
       const r = await prisma.generationReservation.findUnique({ where: { id } });
       if (!r) return;
-      await prisma.generationReservation.update({
-        where: { id },
+      // Conditional: settles once, and only an open reservation.
+      await prisma.generationReservation.updateMany({
+        where: { id, state: { in: SETTLEABLE } },
         data: {
           state: "settled",
           actualMicros: Number.isInteger(actualMicros) ? BigInt(actualMicros) : r.amountMicros,
@@ -227,9 +266,23 @@ export function createPrismaLedger(prisma, { now = () => new Date() } = {}) {
     async get(id) {
       return rowOut(await prisma.generationReservation.findUnique({ where: { id } }));
     },
-    async totals() {
-      const at = now();
-      return { dayMicros: await sumWhere(prisma, { day: dayKey(at) }), monthMicros: await sumWhere(prisma, { month: monthKey(at) }) };
+    async totals(timeZone = "UTC") {
+      const { day, month } = periodKeys(now(), timeZone);
+      return { dayMicros: await sumWhere(prisma, { day }), monthMicros: await sumWhere(prisma, { month }) };
+    },
+    async findByKey(key) {
+      return rowOut(await prisma.generationReservation.findUnique({ where: { idempotencyKey: key } }));
+    },
+    async resolve(id, { charged, actualMicros = null, result = null }) {
+      assertActual(actualMicros);
+      const r = await prisma.generationReservation.findUnique({ where: { id } });
+      if (!r) throw new ApiError("NOT_FOUND", 404, "Reservation not found");
+      const data = charged
+        ? { state: "settled", actualMicros: Number.isInteger(actualMicros) ? BigInt(actualMicros) : r.amountMicros, result: result ?? undefined }
+        : { state: "released" };
+      const { count } = await prisma.generationReservation.updateMany({ where: { id, state: { in: SETTLEABLE } }, data });
+      if (count !== 1) throw new ApiError("NOT_RESOLVABLE", 409, "This reservation is not open or uncertain");
+      return rowOut(await prisma.generationReservation.findUnique({ where: { id } }));
     },
   };
 }

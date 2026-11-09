@@ -83,7 +83,7 @@ test("roles are enforced on the server, and spending is its own permission", opt
     env: {
       APPROVED_PROVIDER_MODELS: "higgsfield:soul", LIVE_PROVIDER_CALLS: "enabled",
       PROVIDER_PRICES_USD: JSON.stringify({ "higgsfield:soul": "1.00" }),
-      SPEND_CAP_PER_JOB_USD: "5", SPEND_CAP_DAILY_USD: "5", SPEND_CAP_MONTHLY_USD: "5",
+      SPEND_CAP_PER_JOB_USD: "5", SPEND_CAP_DAILY_USD: "5", SPEND_CAP_MONTHLY_USD: "5", PRICE_CURRENCY: "USD", PRICE_VERSION: "test-fixture-v1", SPEND_CAP_TIMEZONE: "UTC",
     },
     ledger: createMemoryLedger({ durable: true }),
     adapters: { image: { "higgsfield:soul": { generate: async () => { providerCalls++; return { imageUrl: "https://example.test/x.png" }; } } }, video: {} },

@@ -1,11 +1,12 @@
 import { useState, useCallback, useEffect } from "react";
 import * as api from "./api.js";
 import CharacterBible from "./CharacterBible.jsx";
+import GenerationJobs from "./GenerationJobs.jsx";
 import {
   LayoutDashboard, Users, CalendarDays, Megaphone, Zap,
   Plus, X, Search, Trash2, ChevronLeft, ChevronRight,
   ArrowLeft, Video, TrendingUp, DollarSign, Eye, ExternalLink,
-  Loader2, Image as ImageIcon
+  Loader2, Image as ImageIcon, Activity
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell
@@ -815,6 +816,7 @@ const NAV = [
   { id:"dashboard", icon:LayoutDashboard, label:"Dashboard" },
   { id:"characters", icon:Users, label:"Characters" },
   { id:"pipeline", icon:Zap, label:"Pipeline" },
+  { id:"jobs", icon:Activity, label:"Generation Jobs" },
   { id:"calendar", icon:CalendarDays, label:"Content Calendar" },
   { id:"campaigns", icon:Megaphone, label:"Campaigns" },
 ];
@@ -928,6 +930,7 @@ export default function App() {
               {page==="dashboard" && <Dashboard characters={characters} content={content} campaigns={campaigns} />}
               {page==="characters" && <Characters characters={characters} setCharacters={apiSetCharacters} />}
               {page==="pipeline" && <PipelinePage characters={characters} />}
+              {page==="jobs" && <GenerationJobs />}
               {page==="calendar" && <ContentCalendar content={content} setContent={apiSetContent} characters={characters} />}
               {page==="campaigns" && <Campaigns campaigns={campaigns} setCampaigns={apiSetCampaigns} characters={characters} />}
             </>

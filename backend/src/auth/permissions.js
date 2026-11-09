@@ -28,6 +28,8 @@ const RULES = [
   { method: "POST", path: /^\/pipeline\/[^/]+\/schedule$/, needs: ["schedule"] },
   { method: "GET", path: /^\/system\//, needs: ["admin"] },
   { method: "GET", path: /^\/audit-events/, needs: ["admin"] },
+  // Money and recovery decisions are the owner's.
+  { method: "POST", path: /^\/generation-jobs\//, needs: ["admin"] },
   { method: "GET", path: /.*/, needs: ["read"] },
   { method: "*", path: /.*/, needs: ["edit"] },
 ];

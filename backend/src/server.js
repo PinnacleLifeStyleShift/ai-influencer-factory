@@ -7,6 +7,12 @@ const PORT = parseInt(process.env.PORT) || 4000;
 
 const app = createApp({ prisma });
 
+// Jobs left running by a previous process: release what was provably never
+// sent, mark the rest for reconciliation. Never blocks startup.
+import("./services/generationJobs.js")
+  .then(({ recoverAbandoned }) => recoverAbandoned(prisma, app.locals.jobLedger))
+  .catch((e) => console.error("startup job recovery failed:", e?.message));
+
 if (!process.env.OWNER_API_TOKEN || process.env.OWNER_API_TOKEN.length < MIN_TOKEN_LENGTH) {
   console.warn(`⚠️  OWNER_API_TOKEN is unset or shorter than ${MIN_TOKEN_LENGTH} chars: all /api routes will refuse requests.`);
 }

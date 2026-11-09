@@ -17,7 +17,7 @@ const GATE_ENV = {
   PROVIDER_PRICES_USD: JSON.stringify({ "higgsfield:soul": "1.00", "fal:kling-v2.1-i2v": "1.00" }),
   SPEND_CAP_PER_JOB_USD: "5",
   SPEND_CAP_DAILY_USD: "50",
-  SPEND_CAP_MONTHLY_USD: "100",
+  SPEND_CAP_MONTHLY_USD: "100", PRICE_CURRENCY: "USD", PRICE_VERSION: "test-fixture-v1", SPEND_CAP_TIMEZONE: "UTC",
 };
 
 let prisma;
@@ -340,7 +340,9 @@ test("new media on an approved item invalidates the approval", opts, async () =>
   await withApp(async (app) => {
     const raw = await makeReviewItem(prisma);
     await approve(app, await getItem(app, raw.id));
-    const r = await app.call("/api/pipeline/generate-content", { method: "POST", token: TOKEN, body: { pipelineItemId: raw.id } }).then(json);
+    const refused = await app.call("/api/pipeline/generate-content", { method: "POST", token: TOKEN, body: { pipelineItemId: raw.id } }).then(json);
+    assert.equal(refused.body.code, "APPROVED_CONTENT", "approved content is not regenerated without confirmation");
+    const r = await app.call("/api/pipeline/generate-content", { method: "POST", token: TOKEN, body: { pipelineItemId: raw.id, confirmReplaceApproved: true } }).then(json);
     assert.equal(r.status, 200);
     assert.equal(r.body.pipelineItem.stage, "content_generated");
     assert.equal(r.body.pipelineItem.approvedHash, null);

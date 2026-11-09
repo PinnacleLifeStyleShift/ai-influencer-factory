@@ -298,6 +298,10 @@ model GenerationReservation {
   idempotencyKey String?  @unique @map("idempotency_key")
   requestHash    String?  @map("request_hash")
   result         Json?
+  // Pricing context at reservation time (required since Package D).
+  currency       String   @default("USD")
+  priceVersion   String?  @map("price_version")
+  capTimezone    String?  @map("cap_timezone")
 
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
@@ -449,4 +453,77 @@ model ScriptVersion {
 
   @@unique([scriptId, version])
   @@map("script_versions")
+}
+
+// ─── GENERATION JOBS ─────────────────────────────────────────
+// Durable record of every paid workflow and each step's progress, so a
+// restart can tell "never sent" (safe to release) from "may have been sent"
+// (must be reconciled before anything is bought again).
+
+model GenerationJob {
+  id             String    @id @default(cuid())
+  kind           String    // pipeline.generate-content | character.generate-image | character.generate-video
+  targetType     String    @map("target_type")
+  targetId       String    @map("target_id")
+  workflowKey    String    @map("workflow_key")
+  requestHash    String?   @map("request_hash")
+  // queued | running | awaiting_reconciliation | awaiting_application | succeeded | failed | cancelled
+  state          String    @default("queued")
+  leaseOwner     String?   @map("lease_owner")
+  leaseExpiresAt DateTime? @map("lease_expires_at")
+  errorCode      String?   @map("error_code")
+  createdBy      String?   @map("created_by")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  finishedAt     DateTime? @map("finished_at")
+  steps          GenerationStep[]
+
+  @@index([state])
+  @@index([targetId])
+  @@map("generation_jobs")
+}
+
+model GenerationStep {
+  id                   String   @id @default(cuid())
+  jobId                String   @map("job_id")
+  job                  GenerationJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  index                Int
+  kind                 String   // image | video
+  provider             String
+  model                String
+  idempotencyKey       String   @map("idempotency_key")
+  reservationId        String?  @map("reservation_id")
+  // pending | reserved | submitting | accepted | succeeded | applied | not_submitted |
+  // outcome_unknown | settlement_failed | application_failed | superseded |
+  // resolved_not_charged | resolved_charged_no_result | resolved_charged_with_result | replayed
+  state                String   @default("pending")
+  providerRequestId    String?  @map("provider_request_id")
+  vendorIdempotencyKey String?  @map("vendor_idempotency_key")
+  result               Json?
+  errorCode            String?  @map("error_code")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+  reconciliations      ReconciliationRecord[]
+
+  @@unique([jobId, index])
+  @@index([state])
+  @@map("generation_steps")
+}
+
+// Who resolved an uncertain step, how, and on what evidence. Append-only.
+model ReconciliationRecord {
+  id            String   @id @default(cuid())
+  stepId        String   @map("step_id")
+  step          GenerationStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  reservationId String?  @map("reservation_id")
+  method        String   // provider_check | operator
+  resolution    String   // not_charged | charged_no_result | charged_with_result | still_pending
+  evidence      String
+  actualMicros  BigInt?  @map("actual_micros")
+  resultUrl     String?  @map("result_url")
+  resolvedBy    String   @map("resolved_by")
+  resolvedAt    DateTime @default(now()) @map("resolved_at")
+
+  @@index([stepId])
+  @@map("reconciliation_records")
 }

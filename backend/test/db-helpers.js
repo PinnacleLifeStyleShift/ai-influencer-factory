@@ -28,7 +28,7 @@ export function newClient() {
 }
 
 const TABLES = [
-  "script_versions", "rights_records", "character_versions", "audit_events", "sessions", "generation_reservations", "generation_applications", "character_images", "campaign_submissions", "campaigns", "pipeline_items",
+  "reconciliation_records", "generation_steps", "generation_jobs", "script_versions", "rights_records", "character_versions", "audit_events", "sessions", "generation_reservations", "generation_applications", "character_images", "campaign_submissions", "campaigns", "pipeline_items",
   "scripts", "trends", "content", "characters",
 ];
 

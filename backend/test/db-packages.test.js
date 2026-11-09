@@ -21,7 +21,7 @@ const GATE_ENV = {
   IMAGE_PROVIDER: "mock:image", VIDEO_PROVIDER: "mock:video",
   APPROVED_PROVIDER_MODELS: "mock:image,mock:video", LIVE_PROVIDER_CALLS: "enabled",
   PROVIDER_PRICES_USD: JSON.stringify({ "mock:image": "0.10", "mock:video": "0.50" }),
-  SPEND_CAP_PER_JOB_USD: "5", SPEND_CAP_DAILY_USD: "100", SPEND_CAP_MONTHLY_USD: "100",
+  SPEND_CAP_PER_JOB_USD: "5", SPEND_CAP_DAILY_USD: "100", SPEND_CAP_MONTHLY_USD: "100", PRICE_CURRENCY: "USD", PRICE_VERSION: "test-fixture-v1", SPEND_CAP_TIMEZONE: "UTC",
 };
 /** reportDuration: the mock provider reports the clip length it produced (as real metadata would). */
 function mockGate({ reportDuration = true } = {}) {
@@ -208,7 +208,9 @@ test("a mocked 30-second package is composed shot by shot and measured within to
     assert.equal(ok.status, 200, JSON.stringify(ok.body));
 
     // A background regeneration of one shot clears the approval.
-    await call(app, "/api/pipeline/generate-content", { method: "POST", body: { pipelineItemId: item.id, type: "video", shotIndex: 1 } });
+    const blocked = await call(app, "/api/pipeline/generate-content", { method: "POST", body: { pipelineItemId: item.id, type: "video", shotIndex: 1 } });
+    assert.equal(blocked.body.code, "APPROVED_CONTENT");
+    await call(app, "/api/pipeline/generate-content", { method: "POST", body: { pipelineItemId: item.id, type: "video", shotIndex: 1, confirmReplaceApproved: true } });
     const afterRegen = (await call(app, `/api/pipeline/${item.id}`)).body;
     assert.equal(afterRegen.approvedHash, null);
     assert.equal(afterRegen.stage, "content_generated");

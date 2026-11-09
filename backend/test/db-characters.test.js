@@ -22,7 +22,7 @@ const GATE_ENV = {
   IMAGE_PROVIDER: "mock:image", VIDEO_PROVIDER: "mock:video",
   APPROVED_PROVIDER_MODELS: "mock:image,mock:video", LIVE_PROVIDER_CALLS: "enabled",
   PROVIDER_PRICES_USD: JSON.stringify({ "mock:image": "1.00", "mock:video": "1.00" }),
-  SPEND_CAP_PER_JOB_USD: "5", SPEND_CAP_DAILY_USD: "100", SPEND_CAP_MONTHLY_USD: "100",
+  SPEND_CAP_PER_JOB_USD: "5", SPEND_CAP_DAILY_USD: "100", SPEND_CAP_MONTHLY_USD: "100", PRICE_CURRENCY: "USD", PRICE_VERSION: "test-fixture-v1", SPEND_CAP_TIMEZONE: "UTC",
 };
 function mockGate({ conditioning = false, sourceImage = true } = {}) {
   const inputs = { image: [], video: [] };

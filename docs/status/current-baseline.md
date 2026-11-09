@@ -1,6 +1,6 @@
 # Current baseline
 
-Recorded 2026-11-09. Updated for branch `pkg-c-content-packages` (stacked on `pkg-b-character-bible` → `pkg-a-identity-baseline` → PR #1).
+Recorded 2026-11-09. Updated for branch `pkg-d-durable-jobs` (stacked on `pkg-c-content-packages` → `pkg-b-character-bible` → `pkg-a-identity-baseline` → PR #1).
 No secret values appear here; Railway variables are listed by name only.
 
 Evidence labels:
@@ -43,16 +43,17 @@ Evidence labels:
 | `20261110000000_sessions` | `sessions` table (additive), this branch | TESTED LOCALLY |
 | `20261110010000_audit_events` | `audit_events` table (additive) | TESTED LOCALLY, HOSTED CI at `8ce8ace` |
 | `20261110020000_character_versions_rights` | Versions, rights, pins, recorded inputs (additive), Package B | TESTED LOCALLY, HOSTED CI at `1cfcf9d` |
-| `20261110030000_content_packages` | Idea kinds, script versions, package fields; nullable trend score (fixture scores cleared), Package C | TESTED LOCALLY |
+| `20261110030000_content_packages` | Idea kinds, script versions, package fields; nullable trend score (fixture scores cleared), Package C | TESTED LOCALLY, HOSTED CI at `7e64744` |
+| `20261110040000_generation_jobs` | Jobs, steps, reconciliation records; pricing context on reservations (additive), Package D | TESTED LOCALLY |
 
 Deploy path: `npm start` → `scripts/migrate-deploy.mjs`. It verifies a pre-migration database is identical to the baseline before recording it, and refuses otherwise. Rollback with Railway's button alone does not work after migration (the old image's `db push` refuses); this was re-tested at `10704fa`. See the deployment checklist doc.
 
 ## Tests at this branch (TESTED LOCALLY)
 
-- Backend `npm test`: 113/113 pass, 0 skipped.
+- Backend `npm test`: 127/127 pass, 0 skipped.
 - Frontend vitest: 10/10 pass.
 - `vite build` passes.
-- Playwright UI auth, character-bible and content-package checks: pass.
+- Playwright UI auth, character-bible, content-package and generation-jobs checks: pass.
 - `npm audit`: 0 vulnerabilities in both packages.
 - Both workflows run on this branch's PR; see its checks for HOSTED CI results at the exact head.
 
@@ -108,6 +109,26 @@ Not run here: Docker image builds (no Docker daemon in the sandbox; covered by t
 | Package view survives refresh and errors | Met | content-package e2e (reload) |
 | Regeneration and replacement are explicit | Met (per-shot generate/regenerate; script edits keep unchanged shots' clips) | db-packages |
 | Rendering one output file / measuring real media | **Not met.** Needs media storage (approval) and a measurement step (Package E) | ADR 0004 |
+
+## Package D exit criteria
+
+| Criterion (brief section 8) | Status | Evidence |
+| --- | --- | --- |
+| Durable job states: queued, running, awaiting reconciliation, awaiting application, succeeded, failed | Met (job state derived from step states; steps journalled before each irreversible action) | db-jobs; ADR 0005 |
+| "Proven not submitted" vs "outcome unknown"; nothing re-bought while uncertain | Met | db-jobs death tests (5 points); `DUPLICATE_IN_PROGRESS` while unknown |
+| Vendor idempotency key where supported, plus local idempotency | Met with mocks (stable per step, sent only to adapters that declare support; no real adapter declares it yet) | db-jobs vendor-key test |
+| Whole-workflow cost reserved atomically | Met (existing grouped reservation under an advisory lock) | db-jobs caps test across two instances |
+| Pricing needs currency, price version and cap timezone; unknown or negative prices refused | Met (`PRICE_CONFIG_INCOMPLETE`; stored on every reservation; caps counted in the configured zone) | db-jobs pricing test; generation-gate tests |
+| Settlement never erases spend; money released only for steps proven never sent | Met (settle only from reserved / outcome unknown; resolve once) | db-jobs settlement test |
+| Lease ownership and fencing | Met (every step write is fenced by the lease owner; recovery takes over atomically) | db-jobs; mutation checks |
+| Recover stored-but-unapplied results without re-buying | Met | db-jobs "death beforeApply", "charged with result" |
+| Distinct states for unknown outcome, superseded, settlement failure, application failure | Met (API and UI labels) | Generation Jobs screen; generation-jobs e2e |
+| Read-only reconciliation view, guarded resolution with evidence and audit | Met (owner only, 10+ character evidence, decided once, history shown) | db-jobs manual resolution; generation-jobs e2e |
+| Process death at reservation, before submit, after acceptance, after result, before settlement, before applying | Met with mocks | db-jobs |
+| Same-key and different-key requests across two DB connections | Met | db-jobs "two instances" |
+| Old job replay after a newer approval; approved/scheduled items not silently regenerated | Met (`APPROVED_CONTENT` needs explicit confirmation; scheduled items refused; stale results superseded) | db-routes, db-packages, db-generation-races |
+| Recovery uses the durable ledger even if the app restarts with the default gate | Met (bug found by the e2e and fixed) | db-jobs regression test |
+| Provider status lookups for real adapters | **Not met.** No approved adapter has a verified lookup endpoint; operators resolve with evidence | ADR 0005 |
 
 ## Repository instructions
 
