@@ -72,9 +72,13 @@ try {
   assert.ok(dialogs[0].includes(API), "prompt names the API the token is sent to");
   assert.ok(apiRequests.length >= 3, "app made its parallel initial requests");
   assert.ok(apiRequests.every((r) => r.url.startsWith(API)), "API calls only to the configured local API");
-  assert.ok(apiRequests.some((r) => r.auth === `Bearer ${TOKEN}`), "retried with the entered token");
-  const stored = await page.evaluate(() => sessionStorage.getItem("aif.ownerToken"));
-  assert.equal(stored, TOKEN);
+  assert.ok(apiRequests.some((r) => r.url.endsWith("/api/auth/session") && r.auth === `Bearer ${TOKEN}`), "owner token used only to create a session");
+  assert.ok(apiRequests.filter((r) => !r.url.endsWith("/api/auth/session")).every((r) => r.auth === "" || r.auth.startsWith("Bearer ses_")),
+    "API calls carry a session, never the owner token");
+  const stored = await page.evaluate(() => sessionStorage.getItem("aif.session"));
+  assert.match(stored, /^ses_/, "a session is stored");
+  const all = await page.evaluate(() => JSON.stringify({ ...sessionStorage }) + JSON.stringify({ ...localStorage }) + location.href);
+  assert.ok(!all.includes(TOKEN), "the owner token is not stored or in the URL");
 
   // Reload: token is reused from sessionStorage, no new prompt.
   await page.reload();

@@ -9,15 +9,26 @@ function memoryStore(initial = "") {
   return { get: () => v, set: (x) => { v = x; } };
 }
 
-/** Fake server: 401 unless the expected bearer token is sent. */
+/**
+ * Fake server: POST /api/auth/session exchanges the owner credential for a
+ * session; every other route needs that session.
+ */
+const SESSION = "ses_synthetic-session";
 function fakeFetch(expected = "owner-token") {
   const calls = [];
+  const exchanges = [];
   const fn = vi.fn(async (url, init) => {
+    if (url.endsWith("/api/auth/session")) {
+      exchanges.push(init.headers.Authorization);
+      return init.headers.Authorization === `Bearer ${expected}`
+        ? jsonRes(201, { sessionToken: SESSION })
+        : jsonRes(401, { code: "AUTH_REQUIRED" });
+    }
     calls.push({ url, headers: init.headers });
-    if (init.headers.Authorization !== `Bearer ${expected}`) return jsonRes(401, { error: "Authentication required", code: "AUTH_REQUIRED" });
+    if (init.headers.Authorization !== `Bearer ${SESSION}`) return jsonRes(401, { error: "Authentication required", code: "AUTH_REQUIRED" });
     return jsonRes(200, { ok: true, url });
   });
-  return { fn, calls };
+  return { fn, calls, exchanges };
 }
 
 describe("API base URL", () => {
@@ -60,8 +71,8 @@ describe("authentication prompt", () => {
     expect(prompt).toHaveBeenCalledTimes(1);
     expect(prompt.mock.calls[0][0]).toContain(API); // operator sees where the token goes
     expect(results.every((r) => r.ok)).toBe(true);
-    expect(store.get()).toBe("owner-token");
-    const retried = calls.filter((c) => c.headers.Authorization === "Bearer owner-token");
+    expect(store.get()).toBe(SESSION); // only the session is kept, never the owner token
+    const retried = calls.filter((c) => c.headers.Authorization === `Bearer ${SESSION}`);
     expect(retried).toHaveLength(5);
     expect(calls.every((c) => c.url.startsWith(API))).toBe(true);
   });
@@ -74,12 +85,25 @@ describe("authentication prompt", () => {
   });
 
   it("a wrong token prompts once more, then gives up", async () => {
-    const { fn } = fakeFetch("owner-token");
+    const { fn, calls, exchanges } = fakeFetch("owner-token");
     const prompt = vi.fn(() => "still-wrong");
     const client = createApiClient({ apiUrl: API, fetchImpl: fn, tokenStore: memoryStore("stale"), promptFn: prompt });
     await expect(client.request("/api/x")).rejects.toMatchObject({ status: 401 });
     expect(prompt).toHaveBeenCalledTimes(1);
-    expect(fn).toHaveBeenCalledTimes(2);
+    expect(exchanges).toHaveLength(1);
+    expect(calls).toHaveLength(1); // no retry without a session
+  });
+});
+
+describe("sign out", () => {
+  it("revokes the session on the server and forgets it locally", async () => {
+    const { fn } = fakeFetch();
+    const store = memoryStore(SESSION);
+    const client = createApiClient({ apiUrl: API, fetchImpl: fn, tokenStore: store, promptFn: () => null });
+    await client.signOut();
+    expect(store.get()).toBe("");
+    const logout = fn.mock.calls.find(([u]) => u.endsWith("/api/auth/logout"));
+    expect(logout[1].headers.Authorization).toBe(`Bearer ${SESSION}`);
   });
 });
 

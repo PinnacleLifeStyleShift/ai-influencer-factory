@@ -5,9 +5,11 @@
  *   there is NO fallback: an unset URL fails before any request, so a token
  *   can never be sent to a server the operator did not configure. Local dev
  *   (vite dev server) defaults to http://localhost:4000.
- * - The owner token is typed in at runtime and kept only in this tab's
- *   sessionStorage. It is never part of the bundle. Concurrent 401 responses
- *   share ONE prompt.
+ * - The owner token is typed in at runtime and immediately exchanged for a
+ *   revocable, expiring session (POST /api/auth/session). Only the session
+ *   token is kept, in this tab's sessionStorage; the owner token is never
+ *   stored and never part of the bundle. Concurrent 401 responses share ONE
+ *   prompt.
  * - Paid generation calls carry an Idempotency-Key so retries cannot double-buy.
  */
 export class ApiConfigError extends Error {
@@ -30,7 +32,7 @@ export function resolveApiUrl(env = {}) {
   return env.DEV ? "http://localhost:4000" : null;
 }
 
-const TOKEN_KEY = "aif.ownerToken";
+const TOKEN_KEY = "aif.session";
 
 function sessionTokenStore() {
   return {
@@ -54,7 +56,18 @@ export function createApiClient({
 } = {}) {
   let pendingPrompt = null;
 
-  /** Returns a usable token after a 401, prompting at most once for concurrent callers. */
+  /** Exchanges the owner credential for a session token; "" on failure. */
+  async function exchange(credential) {
+    const res = await fetchImpl(`${apiUrl}/api/auth/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}` },
+    });
+    if (res.status !== 201) return "";
+    const body = await res.json().catch(() => ({}));
+    return typeof body.sessionToken === "string" ? body.sessionToken : "";
+  }
+
+  /** Returns a usable session after a 401, prompting at most once for concurrent callers. */
   function obtainToken(rejectedToken) {
     const current = tokenStore.get();
     if (current && current !== rejectedToken) return Promise.resolve(current); // already refreshed
@@ -62,14 +75,24 @@ export function createApiClient({
       tokenStore.set("");
       pendingPrompt = Promise.resolve()
         .then(() => promptFn(`Enter the owner API token for ${apiUrl}:`))
-        .then((v) => {
-          const t = (v || "").trim();
-          if (t) tokenStore.set(t);
-          return t;
+        .then(async (v) => {
+          const credential = (v || "").trim();
+          const session = credential ? await exchange(credential) : "";
+          if (session) tokenStore.set(session);
+          return session;
         })
         .finally(() => { pendingPrompt = null; });
     }
     return pendingPrompt;
+  }
+
+  /** Signs out on the server (revokes the session), then forgets it locally. */
+  async function signOut() {
+    const token = tokenStore.get();
+    tokenStore.set("");
+    if (token && apiUrl) {
+      await fetchImpl(`${apiUrl}/api/auth/logout`, { method: "POST", headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
+    }
   }
 
   async function request(path, options = {}, retried = false) {
@@ -102,7 +125,7 @@ export function createApiClient({
     return res.json();
   }
 
-  return { request, signOut: () => tokenStore.set(""), apiUrl };
+  return { request, signOut, apiUrl };
 }
 
 const client = createApiClient({ apiUrl: resolveApiUrl(import.meta.env) });

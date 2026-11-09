@@ -31,3 +31,4 @@ is no longer used at build time, at startup, or in tests.
 | `20260321000000_init` | Schema as deployed at commit 277d2d3 (baseline) |
 | `20261108000000_phase1_safety` | Additive only: approval/revision columns, schedule key (unique), media fields, trend provenance, `generation_reservations`, `character_images`, `image_generations` |
 | `20261109000000_generation_fencing` | Additive only: generation claim columns on `pipeline_items`, `generation_applications`, unique `character_images.reservation_id` |
+| `20261110000000_sessions` | Additive only: `sessions` table (hashed session tokens, expiry, revocation) |

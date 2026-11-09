@@ -1,6 +1,15 @@
 import { Router } from "express";
 import { ApiError, sendError } from "../lib/errors.js";
 import { readIdempotencyKey, isUniqueViolation } from "../lib/requests.js";
+import { checkExternalUrl } from "../lib/urlSafety.js";
+
+/** A reference image URL may be sent to providers later, so unsafe ones are refused on input. */
+function assertSafeReference(body) {
+  const v = body?.reference_image_url ?? body?.referenceImageUrl;
+  if (v === undefined || v === null || v === "") return;
+  const check = checkExternalUrl(v);
+  if (!check.ok) throw new ApiError("UNSAFE_URL", 400, `reference image URL refused: ${check.reason}`);
+}
 import { requestHash } from "../services/spendLedger.js";
 import { buildPromptFromCharacter } from "../services/imageGeneration.js";
 import { generateVideo } from "../services/videoGeneration.js";
@@ -90,6 +99,7 @@ router.get("/:id", async (req, res) => {
 // POST /api/characters — create
 router.post("/", async (req, res) => {
   try {
+    assertSafeReference(req.body);
     const character = await createWithNextCharacterId(req.prisma, {
         name: req.body.name,
         characterType: req.body.character_type || req.body.characterType,
@@ -118,6 +128,7 @@ router.post("/", async (req, res) => {
     });
     res.status(201).json(character);
   } catch (err) {
+    if (err instanceof ApiError) return sendError(res, err);
     console.error("POST /characters error:", err);
     res.status(500).json({ error: "Failed to create character" });
   }
@@ -126,6 +137,7 @@ router.post("/", async (req, res) => {
 // PUT /api/characters/:id — update
 router.put("/:id", async (req, res) => {
   try {
+    assertSafeReference(req.body);
     const data = {};
     const fields = {
       name: "name", character_type: "characterType", characterType: "characterType",
@@ -160,6 +172,7 @@ router.put("/:id", async (req, res) => {
     });
     res.json(character);
   } catch (err) {
+    if (err instanceof ApiError) return sendError(res, err);
     console.error("PUT /characters/:id error:", err);
     res.status(500).json({ error: "Failed to update character" });
   }
@@ -196,6 +209,11 @@ router.post("/:id/generate-image", async (req, res) => {
       generationKeys(req, character, "image")
     );
 
+    // WHY: provider output is stored and may be forwarded later; refuse unsafe URLs.
+    if (!checkExternalUrl(result.imageUrl).ok) {
+      throw new ApiError("UNSAFE_MEDIA_URL", 502, "The provider returned a media URL that is not a public https URL; it was not stored",
+        { reservationId: result.reservationId });
+    }
     // Store the candidate and advance the counter together. A replayed result
     // (same request retried) whose candidate is already stored is returned as is.
     const index = character.imageGenerations + 1;

@@ -13,10 +13,12 @@ export class ApiError extends Error {
 }
 
 export function sendError(res, err, fallbackMessage = "Internal server error") {
+  const requestId = res.locals?.requestId;
   if (err instanceof ApiError) {
     const body = { error: err.message, code: err.code };
     if (err.details) body.details = err.details;
+    if (requestId) body.requestId = requestId;
     return res.status(err.httpStatus).json(body);
   }
-  return res.status(500).json({ error: fallbackMessage, code: "INTERNAL_ERROR" });
+  return res.status(500).json({ error: fallbackMessage, code: "INTERNAL_ERROR", ...(requestId ? { requestId } : {}) });
 }

@@ -15,7 +15,8 @@ export function buildCorsOptions(env = process.env) {
       if (!origin) return callback(null, false);
       return callback(null, allowed.includes(origin));
     },
-    allowedHeaders: ["Content-Type", "Authorization", "Idempotency-Key"],
+    allowedHeaders: ["Content-Type", "Authorization", "Idempotency-Key", "X-Request-Id"],
+    exposedHeaders: ["X-Request-Id"],
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
     maxAge: 600,
   };

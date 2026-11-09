@@ -4,6 +4,7 @@ import {
   DESTINATIONS, serializeItem, snapshotHash, mediaTypeOf, invalidatingChange,
 } from "../lib/revision.js";
 import crypto from "crypto";
+import { checkExternalUrl } from "../lib/urlSafety.js";
 import { readIdempotencyKey, isUniqueViolation } from "../lib/requests.js";
 import {
   discoverTrends, analyzeTrendRelevance, SUPPORTED_PLATFORMS, SUPPORTED_NICHES, MAX_TREND_COUNT,
@@ -326,6 +327,12 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
       }
     }
     if (!mediaUrl) throw new Error(`${kind} result has no media URL`);
+    // WHY: provider output is stored and shown/exported later; a non-public
+    // or non-https URL is refused (recorded in the ledger, not applied).
+    if (!checkExternalUrl(mediaUrl).ok) {
+      throw new ApiError("UNSAFE_MEDIA_URL", 502, "The provider returned a media URL that is not a public https URL; it was not applied",
+        { reservationId: r.reservationId });
+    }
 
     await prisma.$transaction(async (tx) => {
       const { count } = await tx.pipelineItem.updateMany({

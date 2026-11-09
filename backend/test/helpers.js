@@ -52,8 +52,32 @@ export function fakePrisma(seed = {}) {
       return { ...row };
     },
   });
+  // Sessions are kept apart from `calls` so tests can assert that no
+  // application data was touched before authentication.
+  const sessions = new Map();
+  const session = {
+    create: async ({ data }) => {
+      const row = { id: `session-${sessions.size + 1}`, createdAt: new Date(), revokedAt: null, lastSeenAt: null, ...data };
+      sessions.set(row.id, row);
+      return { ...row };
+    },
+    findUnique: async ({ where }) => {
+      for (const r of sessions.values()) if (r.tokenHash === where.tokenHash) return { ...r };
+      return null;
+    },
+    updateMany: async ({ where, data }) => {
+      let count = 0;
+      for (const r of sessions.values()) {
+        if (where.id && r.id !== where.id) continue;
+        if (where.principalId && r.principalId !== where.principalId) continue;
+        if (where.revokedAt === null && r.revokedAt) continue;
+        Object.assign(r, data); count++;
+      }
+      return { count };
+    },
+  };
   return {
-    db, calls,
+    db, calls, session, sessionRows: sessions,
     character: model("character"),
     content: model("content"),
     pipelineItem: model("pipelineItem"),
@@ -66,7 +90,7 @@ export async function startApp({ env = {}, prisma = fakePrisma(), gate } = {}) {
     const s = app.listen(0, "127.0.0.1", () => resolve(s));
   });
   const base = `http://127.0.0.1:${server.address().port}`;
-  const call = (path, { method = "GET", body, token, headers = {} } = {}) =>
+  const raw = (path, { method = "GET", body, token, headers = {} } = {}) =>
     fetch(`${base}${path}`, {
       method,
       headers: {
@@ -76,5 +100,22 @@ export async function startApp({ env = {}, prisma = fakePrisma(), gate } = {}) {
       },
       body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body),
     });
-  return { base, call, prisma, close: () => new Promise((r) => server.close(r)) };
+
+  // The synthetic owner token is only accepted at POST /api/auth/session, so
+  // a call made "with TOKEN" is sent with a session obtained from it once.
+  // If no session can be made (e.g. auth not configured) the raw token is
+  // sent, so those tests still see the server's real answer.
+  // The in-flight exchange is shared so concurrent first calls make one session.
+  let ownerSession;
+  async function sessionFor(token) {
+    if (token !== TOKEN) return token;
+    ownerSession ??= raw("/api/auth/session", { method: "POST", token: TOKEN })
+      .then(async (r) => (r.status === 201 ? (await r.json()).sessionToken : null));
+    return (await ownerSession) || token;
+  }
+  const call = async (path, opts = {}) => {
+    if (opts.token && path !== "/api/auth/session") opts = { ...opts, token: await sessionFor(opts.token) };
+    return raw(path, opts);
+  };
+  return { base, call, raw, prisma, close: () => new Promise((r) => server.close(r)) };
 }

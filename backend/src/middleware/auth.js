@@ -1,45 +1,68 @@
-import crypto from "crypto";
 import { ApiError, sendError } from "../lib/errors.js";
+import { MIN_TOKEN_LENGTH, ownerTokenConfigured, secretsEqual } from "../auth/providers.js";
+import { requiredPermissions, missingPermissions } from "../auth/permissions.js";
 
-/**
- * Interim single-owner authentication (spec WP2, one owner role).
- *
- * Every /api request must present `Authorization: Bearer <OWNER_API_TOKEN>`.
- * Fails closed: if OWNER_API_TOKEN is unset or too short, every protected
- * request is refused with AUTH_NOT_CONFIGURED. The token lives only in the
- * server environment; it is never placed in the frontend bundle.
- *
- * This is a placeholder for the owner-selected authentication approach
- * (accounts/sessions/SSO), which remains an open decision.
- */
-export const MIN_TOKEN_LENGTH = 32;
+export { MIN_TOKEN_LENGTH };
 
-function digest(value) {
-  return crypto.createHash("sha256").update(String(value), "utf8").digest();
+function bearer(req) {
+  const m = /^Bearer\s+(.+)$/i.exec(req.get("authorization") || "");
+  return m ? m[1].trim() : "";
 }
 
-export function requireOwnerToken(env = process.env) {
+/**
+ * Fails closed when no credential can ever be issued: without a configured
+ * owner token no session can exist, so every protected request is refused.
+ */
+export function requireAuthConfigured(env) {
+  return (_req, res, next) =>
+    ownerTokenConfigured(env)
+      ? next()
+      : sendError(res, new ApiError("AUTH_NOT_CONFIGURED", 503, "API authentication is not configured on the server"));
+}
+
+/**
+ * Requires an active session. The owner token itself is refused here (it is
+ * only exchanged at POST /api/auth/session) so that every API call is tied to
+ * a session that can expire and be revoked.
+ */
+export function requireSession({ env, sessions }) {
+  return async (req, res, next) => {
+    try {
+      const token = bearer(req);
+      if (!token) return sendError(res, new ApiError("AUTH_REQUIRED", 401, "Authentication required"));
+      const { session, status } = await sessions.lookup(token);
+      if (status === "revoked") return sendError(res, new ApiError("SESSION_REVOKED", 401, "This session was signed out"));
+      if (status === "expired") return sendError(res, new ApiError("SESSION_EXPIRED", 401, "This session has expired"));
+      if (status !== "active") {
+        if (ownerTokenConfigured(env) && secretsEqual(token, env.OWNER_API_TOKEN)) {
+          return sendError(res, new ApiError("SESSION_REQUIRED", 401,
+            "Exchange the owner token for a session at POST /api/auth/session"));
+        }
+        return sendError(res, new ApiError("AUTH_REQUIRED", 401, "Authentication required"));
+      }
+      req.principal = {
+        id: session.principalId,
+        role: session.role,
+        workspaceId: session.workspaceId,
+        sessionId: session.id,
+        provider: session.authProvider,
+      };
+      sessions.touch(session).catch(() => {});
+      return next();
+    } catch (err) {
+      return next(err);
+    }
+  };
+}
+
+/** Checks the principal's role against the route rule table. */
+export function authorize() {
   return (req, res, next) => {
-    const configured = env.OWNER_API_TOKEN;
-    if (!configured || configured.length < MIN_TOKEN_LENGTH) {
-      return sendError(
-        res,
-        new ApiError("AUTH_NOT_CONFIGURED", 503, "API authentication is not configured on the server")
-      );
+    const needs = requiredPermissions(req.method, req.path);
+    const missing = missingPermissions(req.principal?.role, needs);
+    if (missing.length) {
+      return sendError(res, new ApiError("FORBIDDEN", 403, "You do not have permission for this action", { missing }));
     }
-
-    const header = req.get("authorization") || "";
-    const match = /^Bearer\s+(.+)$/i.exec(header);
-    if (!match) {
-      return sendError(res, new ApiError("AUTH_REQUIRED", 401, "Authentication required"));
-    }
-
-    // Compare fixed-length digests so timing does not leak token length/content.
-    if (!crypto.timingSafeEqual(digest(match[1].trim()), digest(configured))) {
-      return sendError(res, new ApiError("AUTH_REQUIRED", 401, "Authentication required"));
-    }
-
-    req.principal = { role: "owner" };
     return next();
   };
 }
