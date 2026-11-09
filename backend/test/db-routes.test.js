@@ -309,7 +309,10 @@ test("concurrent identical generation requests buy at most one image", opts, asy
       app.call("/api/pipeline/generate-content", { method: "POST", token: TOKEN, body: { pipelineItemId: raw.id, type: "image" } }).then(json)));
     assert.equal(calls.image, 1);
     assert.equal(results.filter((r) => r.status === 200).length, 1);
-    assert.ok(results.filter((r) => r.status !== 200).every((r) => r.body.code === "DUPLICATE_IN_PROGRESS"));
+    // Losers are stopped by the item claim, before any reservation.
+    assert.ok(results.filter((r) => r.status !== 200).every((r) => r.body.code === "GENERATION_IN_PROGRESS"),
+      JSON.stringify(results.map((r) => r.body.code)));
+    assert.equal(await prisma.generationReservation.count(), 1);
   }, { gate });
 });
 

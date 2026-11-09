@@ -37,7 +37,18 @@ jobs:
       API_TOKEN: ci-smoke-token-0123456789abcdefghijklmn
       DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci
     steps:
+      # WHY: on pull_request events the default checkout is a temporary merge
+      # commit, not the PR head. Test exactly the commit under review.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact head commit
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          actual="$(git rev-parse HEAD)"
+          echo "Testing $actual"
+          test "$actual" = "$EXPECTED_SHA"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -49,6 +60,7 @@ jobs:
           push: false
           load: true
           tags: aif-api:ci
+          labels: org.opencontainers.image.revision=${{ github.event.pull_request.head.sha || github.sha }}
           cache-from: type=gha,scope=api
           cache-to: type=gha,mode=max,scope=api
 
@@ -67,10 +79,21 @@ jobs:
           push: false
           load: true
           tags: aif-web:ci
+          labels: org.opencontainers.image.revision=${{ github.event.pull_request.head.sha || github.sha }}
           build-args: |
             VITE_API_URL=http://127.0.0.1:4000
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web
+
+      - name: Images were built from the exact head
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          for img in aif-api:ci aif-web:ci; do
+            rev="$(docker inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$img")"
+            echo "$img built from $rev"
+            test "$rev" = "$EXPECTED_SHA"
+          done
 
       - name: Smoke test backend image (fresh database)
         run: |

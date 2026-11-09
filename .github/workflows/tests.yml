@@ -26,7 +26,18 @@ jobs:
       run:
         working-directory: backend
     steps:
+      # WHY: on pull_request events the default checkout is a temporary merge
+      # commit, not the PR head. Test exactly the commit under review.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact head commit
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          actual="$(git rev-parse HEAD)"
+          echo "Testing $actual"
+          test "$actual" = "$EXPECTED_SHA"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -45,7 +56,18 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      # WHY: on pull_request events the default checkout is a temporary merge
+      # commit, not the PR head. Test exactly the commit under review.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact head commit
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          actual="$(git rev-parse HEAD)"
+          echo "Testing $actual"
+          test "$actual" = "$EXPECTED_SHA"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -67,7 +89,18 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      # WHY: on pull_request events the default checkout is a temporary merge
+      # commit, not the PR head. Test exactly the commit under review.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact head commit
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          actual="$(git rev-parse HEAD)"
+          echo "Testing $actual"
+          test "$actual" = "$EXPECTED_SHA"
       - uses: actions/setup-node@v4
         with:
           node-version: 22

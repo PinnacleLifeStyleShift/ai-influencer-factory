@@ -42,7 +42,7 @@ test("fresh database: both migrations apply and match schema.prisma", opts, asyn
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.ok(schemaMatches("mig_fresh"));
   await withClient("mig_fresh", async (c) => {
-    assert.deepEqual(await appliedMigrations(c), ["20260321000000_init", "20261108000000_phase1_safety"]);
+    assert.deepEqual(await appliedMigrations(c), ["20260321000000_init", "20261108000000_phase1_safety", "20261109000000_generation_fencing"]);
   });
   const again = migrateDeploy("mig_fresh");
   assert.equal(again.status, 0, "re-running is a no-op");
@@ -62,7 +62,7 @@ test("legacy db-push database: verified baseline, data preserved, new columns ad
   assert.ok(schemaMatches("mig_legacy"));
 
   await withClient("mig_legacy", async (c) => {
-    assert.deepEqual(await appliedMigrations(c), ["20260321000000_init", "20261108000000_phase1_safety"]);
+    assert.deepEqual(await appliedMigrations(c), ["20260321000000_init", "20261108000000_phase1_safety", "20261109000000_generation_fencing"]);
     const [ch] = await c.$queryRawUnsafe(`SELECT name, image_generations FROM characters WHERE id = 'ch1'`);
     assert.equal(ch.name, "Synthetic Legacy");
     assert.equal(ch.image_generations, 0);

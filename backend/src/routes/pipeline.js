@@ -3,6 +3,7 @@ import { ApiError, sendError } from "../lib/errors.js";
 import {
   DESTINATIONS, serializeItem, snapshotHash, mediaTypeOf, invalidatingChange,
 } from "../lib/revision.js";
+import crypto from "crypto";
 import { readIdempotencyKey, isUniqueViolation } from "../lib/requests.js";
 import {
   discoverTrends, analyzeTrendRelevance, SUPPORTED_PLATFORMS, SUPPORTED_NICHES, MAX_TREND_COUNT,
@@ -41,13 +42,50 @@ function assertNotScheduled(item) {
   }
 }
 
-/** Applies a publish-relevant change only if nobody changed the item meanwhile. */
+// ─── Generation claims ───────────────────────────────────────
+// WHY: a generation spends money and then takes minutes. Without a claim, a
+// schedule, approval, edit or second generation could interleave with it and
+// the late result would overwrite whatever happened meanwhile. The claim is
+// taken atomically before any spend and every competing write checks it.
+
+// A claim older than this is treated as abandoned (crashed process). It is
+// longer than the slowest provider poll (video: 60 x 10 s). A late result from
+// an abandoned attempt is still fenced out by its token.
+export const GENERATION_CLAIM_TTL_MS = 20 * 60 * 1000;
+
+/** Prisma filter: no live generation claim on the item. */
+function noLiveClaim(now = Date.now()) {
+  return {
+    OR: [
+      { generationClaim: null },
+      { generationClaimedAt: { lt: new Date(now - GENERATION_CLAIM_TTL_MS) } },
+    ],
+  };
+}
+
+function claimIsLive(item, now = Date.now()) {
+  return Boolean(item.generationClaim) && Boolean(item.generationClaimedAt) &&
+    new Date(item.generationClaimedAt).getTime() >= now - GENERATION_CLAIM_TTL_MS;
+}
+
+const generationInProgress = () =>
+  new ApiError("GENERATION_IN_PROGRESS", 409, "A generation for this item is in progress; wait for it to finish");
+
+/**
+ * Applies a publish-relevant change only if nobody changed the item meanwhile
+ * and no generation holds it.
+ */
 async function applyChange(prisma, item, data) {
+  if (claimIsLive(item)) throw generationInProgress();
   const { count } = await prisma.pipelineItem.updateMany({
-    where: { id: item.id, revision: item.revision, stage: item.stage },
+    where: { id: item.id, revision: item.revision, stage: item.stage, ...noLiveClaim() },
     data,
   });
-  if (count !== 1) throw new ApiError("REVISION_CONFLICT", 409, "The item changed while this request was processed; reload and retry");
+  if (count !== 1) {
+    const current = await prisma.pipelineItem.findUnique({ where: { id: item.id } });
+    if (current && claimIsLive(current)) throw generationInProgress();
+    throw new ApiError("REVISION_CONFLICT", 409, "The item changed while this request was processed; reload and retry");
+  }
 }
 
 const ITEM_INCLUDE = {
@@ -196,9 +234,22 @@ router.post("/generate-script", handle("POST /pipeline/generate-script", async (
  * Optional header Idempotency-Key. Without it, a server stage key is derived
  * from the item and its revision, and an unfinished workflow is resumed.
  *
- * The whole workflow (image + video when no image exists) is preflighted and
- * its total cost reserved before the first provider call. Each successful
- * stage is persisted immediately, so a retry never re-buys finished stages.
+ * Lifecycle (WHY each step exists):
+ *  1. Preflight every stage: a blocked stage fails before any write or spend.
+ *  2. Claim the item at its current revision with a fresh token, BEFORE any
+ *     reservation: competing requests (other keys), schedules, approvals and
+ *     edits are refused while the claim is live, so nothing interleaves with
+ *     the slow provider call.
+ *  3. Run the workflow; its total cost is reserved up front.
+ *  4. Apply each result in one transaction that requires our token, the
+ *     expected revision and a not-scheduled stage, and that records a
+ *     generation_applications row. A result whose fence fails is recorded in
+ *     the ledger but never written over newer state.
+ *  5. Replays: a result already applied is returned as recorded and changes
+ *     nothing (so an old key cannot bring back old media or clear a later
+ *     approval). A result recorded but never applied is recovered only when
+ *     no other workflow has started on the item since.
+ *  6. Release the claim; keep the workflow key on failure so a retry resumes.
  */
 router.post("/generate-content", handle("POST /pipeline/generate-content", async (req, res) => {
   const { pipelineItemId, type = "image" } = req.body || {};
@@ -214,10 +265,11 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
   });
   if (!item) throw notFound();
   assertNotScheduled(item);
+  if (claimIsLive(item)) throw generationInProgress();
 
   const needsImage = type === "image" || !item.imageUrl;
   const kinds = type === "image" ? ["image"] : needsImage ? ["image", "video"] : ["video"];
-  // Blocks before ANY write, reservation or provider call if any stage is not permitted.
+  // (1) Blocks before ANY write, reservation or provider call if any stage is not permitted.
   gate.preflightAll(kinds);
 
   const hash = requestHash({ op: "pipeline.generate-content", pipelineItemId, type });
@@ -225,14 +277,73 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
   const workflowKey = clientKey
     ? `${type}|client:${clientKey}`
     : resumable || `${type}|pipe:${item.id}:r${item.revision}`;
-  if (item.activeWorkflowKey !== workflowKey) {
-    await prisma.pipelineItem.update({ where: { id: item.id }, data: { activeWorkflowKey: workflowKey } });
+  // Captured before the claim overwrites it: an unapplied result may only be
+  // recovered if this same workflow was the last one started on the item.
+  const priorWorkflowKey = item.activeWorkflowKey;
+
+  // (2) Atomic claim. The revision condition makes it fail if anything changed
+  // since the read above; the claim condition makes competing requests fail.
+  const token = crypto.randomUUID();
+  const claimed = await prisma.pipelineItem.updateMany({
+    where: { id: item.id, revision: item.revision, stage: { not: "scheduled" }, ...noLiveClaim() },
+    data: { generationClaim: token, generationClaimedAt: new Date(), activeWorkflowKey: workflowKey },
+  });
+  if (claimed.count !== 1) {
+    const current = await prisma.pipelineItem.findUnique({ where: { id: item.id } });
+    if (current?.stage === "scheduled") assertNotScheduled(current);
+    if (current && claimIsLive(current)) throw generationInProgress();
+    throw new ApiError("REVISION_CONFLICT", 409, "The item changed while this request was processed; reload and retry");
   }
 
   const prompt = buildPromptFromCharacter(item.character);
   const motionPrompt = item.script
     ? `${item.script.hook || ""} ${item.script.body || ""}`.trim().slice(0, 500)
     : "Subtle natural movement, gentle head turn, cinematic lighting";
+
+  let expectedRevision = item.revision;
+  const outcomes = [];
+
+  // (4)/(5) Fenced, recorded application of one step's result.
+  async function applyResult(kind, r, fields) {
+    const mediaUrl = kind === "image" ? r.imageUrl : r.videoUrl;
+    const recorded = { kind, mediaUrl: mediaUrl || null, reservationId: r.reservationId || null, replayed: r.replayed === true };
+
+    if (r.replayed) {
+      const applied = r.reservationId
+        ? await prisma.generationApplication.findUnique({ where: { reservationId: r.reservationId } })
+        : null;
+      if (applied) {
+        // Already applied once: return what was recorded, change nothing.
+        outcomes.push({ ...recorded, applied: false, alreadyApplied: true });
+        return;
+      }
+      if (priorWorkflowKey !== workflowKey) {
+        // Recorded but never applied, and another workflow has run since:
+        // applying it now would overwrite newer media.
+        throw new ApiError("GENERATION_SUPERSEDED", 409,
+          "This result was recorded but never applied, and the item has newer generation work; it was not applied",
+          { reservationId: r.reservationId, result: { [kind === "image" ? "imageUrl" : "videoUrl"]: mediaUrl } });
+      }
+    }
+    if (!mediaUrl) throw new Error(`${kind} result has no media URL`);
+
+    await prisma.$transaction(async (tx) => {
+      const { count } = await tx.pipelineItem.updateMany({
+        where: { id: item.id, generationClaim: token, revision: expectedRevision, stage: { not: "scheduled" } },
+        data: invalidatingChange(fields(mediaUrl), "content_generated"),
+      });
+      if (count !== 1) {
+        throw new ApiError("GENERATION_SUPERSEDED", 409,
+          "The item changed or this generation lost its claim; the result was recorded but not applied",
+          { reservationId: r.reservationId, result: { [kind === "image" ? "imageUrl" : "videoUrl"]: mediaUrl } });
+      }
+      await tx.generationApplication.create({
+        data: { reservationId: r.reservationId, pipelineItemId: item.id, kind, mediaUrl, revision: expectedRevision + 1 },
+      });
+    });
+    expectedRevision += 1;
+    outcomes.push({ ...recorded, applied: true, recovered: r.replayed === true });
+  }
 
   const steps = [];
   if (needsImage) {
@@ -242,10 +353,7 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
       requestHash: hash,
       input: { prompt, options: { aspectRatio: item.character.aspectRatio || "9:16" } },
       // A new still invalidates any video made from the old one, and any approval.
-      onResult: (r) => prisma.pipelineItem.update({
-        where: { id: item.id },
-        data: invalidatingChange({ imageUrl: r.imageUrl, videoUrl: null }, "content_generated"),
-      }),
+      onResult: (r) => applyResult("image", r, (url) => ({ imageUrl: url, videoUrl: null })),
     });
   }
   if (type === "video") {
@@ -258,15 +366,28 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
         prompt: motionPrompt,
         options: { duration: "5", mode: "std" },
       }),
-      onResult: (r) => prisma.pipelineItem.update({
-        where: { id: item.id },
-        data: invalidatingChange({ videoUrl: r.videoUrl }, "content_generated"),
-      }),
+      onResult: (r) => applyResult("video", r, (url) => ({ videoUrl: url })),
     });
   }
 
-  const results = await gate.runWorkflow(steps);
-  await prisma.pipelineItem.update({ where: { id: item.id }, data: { activeWorkflowKey: null } });
+  // (3)/(6)
+  let finished = false;
+  let keepWorkflowKey = workflowKey; // on failure: a retry resumes this workflow
+  try {
+    await gate.runWorkflow(steps);
+    finished = true;
+  } catch (err) {
+    // A superseded result must not become recoverable later: put back the
+    // workflow key that was current before this request.
+    if (err instanceof ApiError && err.code === "GENERATION_SUPERSEDED") keepWorkflowKey = priorWorkflowKey;
+    throw err;
+  } finally {
+    // Only our own claim is released (a taken-over or cleared claim is left alone).
+    await prisma.pipelineItem.updateMany({
+      where: { id: item.id, generationClaim: token },
+      data: { generationClaim: null, generationClaimedAt: null, activeWorkflowKey: finished ? null : keepWorkflowKey },
+    }).catch((e) => console.error("generate-content: claim release failed:", e?.message));
+  }
 
   const updated = await prisma.pipelineItem.findUnique({ where: { id: item.id }, include: ITEM_INCLUDE });
   res.json({
@@ -275,7 +396,8 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
     pipelineItem: serializeItem(updated),
     imageUrl: updated.imageUrl,
     videoUrl: updated.videoUrl,
-    replayed: results.every((r) => r.replayed === true),
+    replayed: outcomes.length > 0 && outcomes.every((o) => o.replayed),
+    results: outcomes,
   });
 }));
 
@@ -374,9 +496,12 @@ router.post("/:id/approve", handle("POST /pipeline/:id/approve", async (req, res
   }
   if (!item.platform) throw new ApiError("DESTINATION_REQUIRED", 409, "Choose the destination platform before approval");
   if (!mediaTypeOf(item)) throw new ApiError("MEDIA_REQUIRED", 409, "Generate media before approval");
+  // WHY: approving media that a running generation is about to replace would
+  // approve something nobody will see.
+  if (claimIsLive(item)) throw generationInProgress();
 
   const { count } = await req.prisma.pipelineItem.updateMany({
-    where: { id: item.id, revision: item.revision, stage: "review" },
+    where: { id: item.id, revision: item.revision, stage: "review", ...noLiveClaim() },
     data: {
       stage: "approved",
       approvedRevision: item.revision,
@@ -448,6 +573,9 @@ router.post("/:id/schedule", handle("POST /pipeline/:id/schedule", async (req, r
       if (item.approvedRevision !== item.revision || item.approvedHash !== hash) {
         throw new ApiError("APPROVAL_STALE", 409, "Approved snapshot no longer matches the item; re-approval required");
       }
+      // WHY: a running generation will replace this item's media; scheduling
+      // now would put media on the calendar that is about to change.
+      if (claimIsLive(item)) throw generationInProgress();
       if (platform !== undefined && platform !== item.platform) {
         throw new ApiError("DESTINATION_MISMATCH", 409,
           `Approved destination is ${item.platform}; scheduling elsewhere requires a new approval`);
@@ -455,8 +583,9 @@ router.post("/:id/schedule", handle("POST /pipeline/:id/schedule", async (req, r
 
       // Claim: only one concurrent request can move approved -> scheduled.
       const claim = await tx.pipelineItem.updateMany({
-        where: { id: item.id, stage: "approved", revision: item.revision, approvedHash: hash },
-        data: { stage: "scheduled", scheduledDate: date },
+        where: { id: item.id, stage: "approved", revision: item.revision, approvedHash: hash, ...noLiveClaim() },
+        // Clearing an abandoned claim fences out its late result (token gone).
+        data: { stage: "scheduled", scheduledDate: date, generationClaim: null, generationClaimedAt: null },
       });
       if (claim.count !== 1) return { replay: true };
 

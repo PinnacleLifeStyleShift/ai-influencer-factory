@@ -72,7 +72,7 @@ model CharacterImage {
   source          String   // generated | manual
   provider        String?
   model           String?
-  reservationId   String?  @map("reservation_id")
+  reservationId   String?  @unique @map("reservation_id")
   generationIndex Int?     @map("generation_index")
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
@@ -241,6 +241,11 @@ model PipelineItem {
   approvedBy        String? @map("approved_by")
   // Durable key of an unfinished generation workflow, reused on retry.
   activeWorkflowKey String? @map("active_workflow_key")
+  // Generation claim (fencing token). Set atomically before any spend; while
+  // it is live, scheduling, approval and edits are refused, and a result is
+  // applied only by the holder of this exact token at the expected revision.
+  generationClaim     String?   @map("generation_claim")
+  generationClaimedAt DateTime? @map("generation_claimed_at")
 
   createdAt     DateTime  @default(now()) @map("created_at")
   updatedAt     DateTime  @updatedAt @map("updated_at")
@@ -270,4 +275,21 @@ model GenerationReservation {
   @@index([day])
   @@index([month])
   @@map("generation_reservations")
+}
+
+// ─── GENERATION APPLICATIONS ─────────────────────────────────
+// One row per provider result applied to a pipeline item, written in the same
+// transaction as the item change. Its presence means "already applied": a
+// replay of that reservation returns the recorded result and changes nothing.
+
+model GenerationApplication {
+  reservationId  String   @id @map("reservation_id")
+  pipelineItemId String   @map("pipeline_item_id")
+  kind           String   // image | video
+  mediaUrl       String   @map("media_url")
+  revision       Int      // item revision produced by this application
+  appliedAt      DateTime @default(now()) @map("applied_at")
+
+  @@index([pipelineItemId])
+  @@map("generation_applications")
 }

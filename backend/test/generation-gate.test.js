@@ -284,3 +284,80 @@ test("default ledger selection is the non-durable in-memory ledger", () => {
   assert.equal(selectLedger({ SPEND_LEDGER: "memory" }, null).durable, false);
   assert.throws(() => selectLedger({ SPEND_LEDGER: "postgres" }, null));
 });
+
+// ─── Persistence failures after a successful provider call ───
+// WHY: the provider has already charged; the ledger must keep that spend,
+// free only steps that never started, and never buy the same step twice.
+
+const TWO_STEP_ENV = {
+  ...FULL_ENV,
+  VIDEO_PROVIDER: "fal:kling-v2.1-i2v",
+  APPROVED_PROVIDER_MODELS: "higgsfield:soul,fal:kling-v2.1-i2v",
+  PROVIDER_PRICES_USD: JSON.stringify({ "higgsfield:soul": "1.00", "fal:kling-v2.1-i2v": "1.00" }),
+};
+
+function twoStepAdapters() {
+  const { adapters, calls } = mockAdapters();
+  let video = 0;
+  adapters.video = { "fal:kling-v2.1-i2v": { generate: async () => { video++; return { videoUrl: "v" }; } } };
+  return { adapters, calls, videoCalls: () => video };
+}
+
+test("settle failure keeps the spent step reserved and releases only unstarted steps", async () => {
+  const base = createMemoryLedger({ durable: true });
+  const ids = [];
+  const ledger = {
+    ...base,
+    reserveGroup: async (...a) => { const r = await base.reserveGroup(...a); ids.push(...r.map((x) => x.reservationId)); return r; },
+    settle: async () => { throw new Error("db down"); },
+  };
+  const { adapters, calls, videoCalls } = twoStepAdapters();
+  const gate = createGenerationGate({ env: TWO_STEP_ENV, ledger, adapters, log: quietLog });
+  await assert.rejects(gate.runWorkflow([{ kind: "image", input: {} }, { kind: "video", input: {} }]), (err) => {
+    assert.equal(err.code, "SETTLEMENT_FAILED");
+    assert.equal(err.details.result.imageUrl, "https://example.test/fixture.png");
+    return true;
+  });
+  assert.equal((await base.get(ids[0])).state, "reserved", "spent step stays counted");
+  assert.equal((await base.get(ids[1])).state, "released", "unstarted step freed");
+  assert.equal(calls.higgs, 1);
+  assert.equal(videoCalls(), 0);
+});
+
+test("onResult failure keeps the settled result and releases only unstarted steps", async () => {
+  const ledger = createMemoryLedger({ durable: true });
+  const { adapters, videoCalls } = twoStepAdapters();
+  const gate = createGenerationGate({ env: TWO_STEP_ENV, ledger, adapters, log: quietLog });
+  let reservationId;
+  await assert.rejects(gate.runWorkflow([
+    { kind: "image", input: {}, idempotencyKey: "w:image", requestHash: "h", onResult: async () => { throw new Error("db down"); } },
+    { kind: "video", input: {}, idempotencyKey: "w:video", requestHash: "h" },
+  ]), (err) => {
+    assert.equal(err.code, "RESULT_NOT_APPLIED");
+    reservationId = err.details.reservationId;
+    return true;
+  });
+  assert.equal((await ledger.get(reservationId)).state, "settled");
+  assert.equal((await ledger.totals()).dayMicros, 1_000_000, "only the bought step is counted");
+  assert.equal(videoCalls(), 0);
+
+  // A retry of the same keys replays the stored image and buys only the video.
+  const results = await gate.runWorkflow([
+    { kind: "image", input: {}, idempotencyKey: "w:image", requestHash: "h" },
+    { kind: "video", input: {}, idempotencyKey: "w:video", requestHash: "h" },
+  ]);
+  assert.equal(results[0].replayed, true);
+  assert.equal(videoCalls(), 1);
+});
+
+test("an ApiError from onResult passes through unchanged, after releasing unstarted steps", async () => {
+  const ledger = createMemoryLedger({ durable: true });
+  const { adapters } = twoStepAdapters();
+  const gate = createGenerationGate({ env: TWO_STEP_ENV, ledger, adapters, log: quietLog });
+  const { ApiError } = await import("../src/lib/errors.js");
+  await assert.rejects(gate.runWorkflow([
+    { kind: "image", input: {}, onResult: async () => { throw new ApiError("GENERATION_SUPERSEDED", 409, "x"); } },
+    { kind: "video", input: {} },
+  ]), { code: "GENERATION_SUPERSEDED" });
+  assert.equal((await ledger.totals()).dayMicros, 1_000_000);
+});

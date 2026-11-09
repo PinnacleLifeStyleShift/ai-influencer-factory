@@ -38,7 +38,16 @@ export function serializeItem(item) {
     item.stage === "approved" || item.stage === "scheduled"
       ? item.approvedRevision === item.revision && item.approvedHash === hash
       : false;
-  return { ...item, snapshotHash: hash, mediaType: mediaTypeOf(item), approvalCurrent };
+  // The claim token is a fencing secret for the server; clients only need to
+  // know whether a generation is running.
+  const { generationClaim, ...rest } = item;
+  return {
+    ...rest,
+    snapshotHash: hash,
+    mediaType: mediaTypeOf(item),
+    approvalCurrent,
+    generationInProgress: Boolean(generationClaim),
+  };
 }
 
 /** Prisma update payload that records a publish-relevant change. */

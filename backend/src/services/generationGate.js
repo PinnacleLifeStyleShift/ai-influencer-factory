@@ -50,6 +50,14 @@ export class ProviderError extends Error {
   }
 }
 
+/** Media URLs only: safe to return to the operator and to log. */
+function publicResult(result) {
+  const out = {};
+  if (result?.imageUrl) out.imageUrl = result.imageUrl;
+  if (result?.videoUrl) out.videoUrl = result.videoUrl;
+  return out;
+}
+
 /** Picks the ledger. Only an explicit SPEND_LEDGER=postgres selects the durable one. */
 export function selectLedger(env, prisma) {
   if (env.SPEND_LEDGER === "postgres") {
@@ -126,6 +134,17 @@ export function createGenerationGate({ env = process.env, ledger, adapters, log 
    * All steps are preflighted, then their total cost is reserved atomically,
    * then steps run in order. onResult persists each stage as soon as it
    * succeeds so a later failure does not lose (or re-buy) earlier output.
+   *
+   * Failure rules (WHY: money already spent must stay counted, money not
+   * spent must be freed, and nothing may be bought twice):
+   *  - provider says "not sent"       -> release this step
+   *  - provider outcome unclear       -> keep this step (outcome_unknown)
+   *  - provider succeeded, settle fails -> keep this step reserved (it still
+   *    blocks retries of its key, so the result is never re-bought) and
+   *    report the result so it is not lost
+   *  - provider succeeded, onResult fails -> the step is settled with its
+   *    result stored; a retry of the same key replays it for recovery
+   *  - in every case, later steps that never started are released
    */
   async function runWorkflow(steps) {
     const checks = preflightAll(steps.map((s) => s.kind));
@@ -140,6 +159,21 @@ export function createGenerationGate({ env = process.env, ledger, adapters, log 
       })),
       caps
     );
+
+    // Releases reservations for steps after index i that never started.
+    // Best effort: a release that fails leaves the money counted (safe side).
+    async function releaseUnstartedAfter(i) {
+      for (let j = i + 1; j < steps.length; j++) {
+        const rj = reservations[j];
+        if (rj.reservationId && rj.replay === undefined) {
+          try {
+            await ledger.release(rj.reservationId);
+          } catch (err) {
+            log.error?.(`[generation] could not release unstarted reservation ${rj.reservationId}: ${err?.message}`);
+          }
+        }
+      }
+    }
 
     const results = [];
     for (let i = 0; i < steps.length; i++) {
@@ -159,12 +193,7 @@ export function createGenerationGate({ env = process.env, ledger, adapters, log 
           const notSent = err instanceof ProviderError && err.submitted === false;
           if (notSent) await ledger.release(r.reservationId);
           else await ledger.markUnknown(r.reservationId);
-          // Later steps never started: free their reservations.
-          for (let j = i + 1; j < steps.length; j++) {
-            if (reservations[j].reservationId && reservations[j].replay === undefined) {
-              await ledger.release(reservations[j].reservationId);
-            }
-          }
+          await releaseUnstartedAfter(i);
           if (notSent) {
             throw new ApiError("PROVIDER_UNAVAILABLE", 503, `${check.selected} could not be called: ${err.message}`);
           }
@@ -172,7 +201,29 @@ export function createGenerationGate({ env = process.env, ledger, adapters, log 
           throw new ApiError("OUTCOME_UNKNOWN", 502,
             `${check.selected} did not return a confirmed result; not retried`, { reservationId: r.reservationId });
         }
-        await ledger.settle(r.reservationId, null, result);
+
+        // The provider has charged us. Record that; a few quick retries cover
+        // transient database errors.
+        let settled = false;
+        let lastErr;
+        for (let attempt = 0; attempt < 3 && !settled; attempt++) {
+          try {
+            await ledger.settle(r.reservationId, null, result);
+            settled = true;
+          } catch (err) {
+            lastErr = err;
+          }
+        }
+        if (!settled) {
+          // WHY not release or mark unknown: the spend happened. Leaving the
+          // reservation "reserved" keeps it counted against the caps and makes
+          // any retry of this key DUPLICATE_IN_PROGRESS instead of a new purchase.
+          await releaseUnstartedAfter(i);
+          log.error?.(`[generation] ${check.selected} succeeded but settlement failed (reservation ${r.reservationId}): ${lastErr?.message}`);
+          throw new ApiError("SETTLEMENT_FAILED", 502,
+            "The provider returned a result but it could not be recorded; it was not applied and will not be re-bought. Reconcile this reservation.",
+            { reservationId: r.reservationId, result: publicResult(result) });
+        }
       }
 
       const enriched = {
@@ -183,7 +234,20 @@ export function createGenerationGate({ env = process.env, ledger, adapters, log 
         estimatedCostMicros: r.replay !== undefined ? 0 : check.priceMicros,
       };
       results.push(enriched);
-      if (step.onResult) await step.onResult(enriched);
+      if (step.onResult) {
+        try {
+          await step.onResult(enriched);
+        } catch (err) {
+          // The result is settled and stored with this key, so nothing is lost
+          // and nothing is re-bought: a retry of the same request replays it.
+          await releaseUnstartedAfter(i);
+          if (err instanceof ApiError) throw err;
+          log.error?.(`[generation] result of reservation ${r.reservationId} not applied: ${err?.message}`);
+          throw new ApiError("RESULT_NOT_APPLIED", 503,
+            "The result was recorded but could not be applied; retry the same request to apply it without a new charge.",
+            { reservationId: r.reservationId, result: publicResult(result) });
+        }
+      }
     }
     return results;
   }
