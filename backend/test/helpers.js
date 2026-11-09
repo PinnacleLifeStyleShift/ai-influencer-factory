@@ -76,8 +76,10 @@ export function fakePrisma(seed = {}) {
       return { count };
     },
   };
+  const auditRows = [];
+  const auditEvent = { create: async ({ data }) => { auditRows.push(data); return data; } };
   return {
-    db, calls, session, sessionRows: sessions,
+    db, calls, session, sessionRows: sessions, auditEvent, auditRows,
     character: model("character"),
     content: model("content"),
     pipelineItem: model("pipelineItem"),

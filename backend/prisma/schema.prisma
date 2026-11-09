@@ -313,3 +313,27 @@ model Session {
   @@index([principalId])
   @@map("sessions")
 }
+
+// ─── AUDIT EVENTS ────────────────────────────────────────────
+// Redacted evidence of who did what: actor, route pattern, target id, result
+// and correlation id. Never request bodies, tokens or provider payloads.
+
+model AuditEvent {
+  id         String   @id @default(cuid())
+  at         DateTime @default(now())
+  actorId    String?  @map("actor_id")
+  actorRole  String?  @map("actor_role")
+  sessionId  String?  @map("session_id")
+  action     String   // e.g. "POST /api/pipeline/:id/approve" or "auth.session.create"
+  targetType String?  @map("target_type")
+  targetId   String?  @map("target_id")
+  status     Int
+  outcome    String   // success | denied | failed
+  errorCode  String?  @map("error_code")
+  requestId  String?  @map("request_id")
+
+  @@index([at])
+  @@index([targetId])
+  @@index([actorId])
+  @@map("audit_events")
+}

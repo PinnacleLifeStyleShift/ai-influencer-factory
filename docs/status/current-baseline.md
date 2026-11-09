@@ -41,12 +41,13 @@ Evidence labels:
 | `20261108000000_phase1_safety` | Approval, schedule, ledger, character images (additive) | TESTED LOCALLY, HOSTED CI |
 | `20261109000000_generation_fencing` | Claims, `generation_applications` (additive) | TESTED LOCALLY, HOSTED CI at `10704fa` |
 | `20261110000000_sessions` | `sessions` table (additive), this branch | TESTED LOCALLY |
+| `20261110010000_audit_events` | `audit_events` table (additive), this branch | TESTED LOCALLY |
 
 Deploy path: `npm start` → `scripts/migrate-deploy.mjs`. It verifies a pre-migration database is identical to the baseline before recording it, and refuses otherwise. Rollback with Railway's button alone does not work after migration (the old image's `db push` refuses); this was re-tested at `10704fa`. See the deployment checklist doc.
 
 ## Tests at this branch (TESTED LOCALLY)
 
-- Backend `npm test`: 91/91 pass, 0 skipped.
+- Backend `npm test`: 98/98 pass, 0 skipped.
 - Frontend vitest: 10/10 pass.
 - `vite build` passes.
 - Playwright UI auth check: passes.
@@ -54,6 +55,28 @@ Deploy path: `npm start` → `scripts/migrate-deploy.mjs`. It verifies a pre-mig
 - Both workflows run on this branch's PR; see its checks for HOSTED CI results at the exact head.
 
 Not run here: Docker image builds (no Docker daemon in the sandbox; covered by the Docker build workflow), and anything against the live service.
+
+## Package A exit criteria
+
+| Criterion (brief section 5) | Status | Evidence |
+| --- | --- | --- |
+| Authenticated CRUD works with safe local fixtures | Met | TESTED LOCALLY (db-routes, db-hardening, db-auth) |
+| Auth-provider interface, sessions, revocation, server-side authorization | Met | ADR 0001; db-auth tests |
+| Absent / invalid / expired / revoked credentials refused | Met | db-auth tests |
+| Wrong object IDs answer 404 | Met | db-auth, db-hardening tests |
+| Wrong workspace | Not applicable yet: single workspace by design (ADR 0001) | Open for multi-workspace |
+| Unauthorized generation/export fails before any provider action | Met for generation; no export route exists yet (Package E) | db-auth (`spend` refused, 0 provider calls) |
+| Health discloses only health | Met | db-auth test |
+| CORS is an origin policy, not authentication | Met | auth-cors tests |
+| Rate limits, request schemas, body size limits, safe errors | Met (in-memory, per-process limits) | db-hardening, routes tests; ADR 0002 |
+| Upload type/size limits | No upload route exists; requirement recorded for B/E | ADR 0002 |
+| SSRF checks for external asset URLs | Met for input and stored provider URLs; DNS check ready for fetch points | url-safety tests |
+| Stable codes, correlation IDs, no provider payloads in errors | Met | db-auth, db-hardening tests |
+| Tokens out of logs, bundles, URLs; browser history/analytics | Met | e2e (owner token never stored or in URL), bundle check in CI, ADR 0002 |
+| Old production URLs cannot be silently selected | Met | frontend tests, CI bundle check |
+| Migrations and Docker images pass on the exact head | HOSTED CI on each push | PR checks |
+| Audit evidence for actions | Met (best effort, redacted) | db-hardening tests; ADR 0002 |
+| Production exposure secured | **Not met.** It needs the approved deployment and live verification | See "Known production exposure" |
 
 ## Repository instructions
 

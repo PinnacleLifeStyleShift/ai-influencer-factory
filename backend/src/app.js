@@ -10,12 +10,14 @@ import dashboardRoutes from "./routes/dashboard.js";
 import pipelineRoutes from "./routes/pipeline.js";
 
 import { buildCorsOptions } from "./lib/cors.js";
-import { sendError, ApiError } from "./lib/errors.js";
+import { sendError, ApiError, routeError } from "./lib/errors.js";
 import { requireAuthConfigured, requireSession, authorize } from "./middleware/auth.js";
 import { requestId } from "./middleware/requestId.js";
 import { createOwnerTokenProvider } from "./auth/providers.js";
 import { createSessionStore } from "./auth/sessions.js";
 import { createSessionHandler, authRoutes } from "./routes/auth.js";
+import { createAuditLog } from "./services/audit.js";
+import { listLimit } from "./lib/validate.js";
 import { rateLimit } from "./middleware/rateLimit.js";
 import { createGenerationGate, selectLedger } from "./services/generationGate.js";
 import { imageAdapters } from "./services/imageGeneration.js";
@@ -28,6 +30,7 @@ import { videoAdapters } from "./services/videoGeneration.js";
 export function createApp({ prisma, env = process.env, gate, logRequests = true, sessions, authProvider } = {}) {
   const sessionStore = sessions || createSessionStore(prisma);
   const provider = authProvider || createOwnerTokenProvider(env);
+  const audit = createAuditLog(prisma);
 
   // One gate per app, injected into every route via req.generationGate.
   const generationGate =
@@ -56,6 +59,8 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
   const api = express.Router();
   api.use(rateLimit({ windowMs: 60_000, max: Number(env.API_RATE_LIMIT_PER_MIN) || 300 }));
   api.use(requireAuthConfigured(env));
+  // Before authentication so refused attempts are recorded as well.
+  api.use(audit.middleware());
   // WHY a tight limit: this is the only route that accepts the owner token,
   // so it is the one worth guessing against.
   api.post(
@@ -81,6 +86,21 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
     generationLimiter
   );
 
+  // Audit trail (admin only via the permission table). Newest first; page
+  // with ?before=<ISO time>; filter with ?targetId=.
+  api.get("/audit-events", async (req, res, next) => {
+    try {
+      const where = {};
+      if (typeof req.query.targetId === "string") where.targetId = req.query.targetId;
+      if (typeof req.query.before === "string") {
+        const before = new Date(req.query.before);
+        if (Number.isNaN(before.getTime())) return sendError(res, new ApiError("VALIDATION_FAILED", 400, "before must be an ISO date-time"));
+        where.at = { lt: before };
+      }
+      res.json(await prisma.auditEvent.findMany({ where, orderBy: { at: "desc" }, take: listLimit(req) }));
+    } catch (err) { next(err); }
+  });
+
   // Read-only view of what the spending gate would allow (no secrets).
   api.get("/system/generation-policy", (req, res) => res.json(req.generationGate.describe()));
 
@@ -102,8 +122,7 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
     if (err?.type === "entity.parse.failed") {
       return sendError(res, new ApiError("VALIDATION_FAILED", 400, "Malformed JSON body"));
     }
-    console.error("Unhandled error:", err?.message || err);
-    return sendError(res, err);
+    return routeError(res, err, "Internal server error", "unhandled");
   });
 
   return app;

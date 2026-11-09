@@ -1,5 +1,6 @@
 import { Router } from "express";
-import { ApiError, sendError } from "../lib/errors.js";
+import { ApiError, sendError, routeError } from "../lib/errors.js";
+import { validateBody, listLimit, SCHEMAS } from "../lib/validate.js";
 import { readIdempotencyKey, isUniqueViolation } from "../lib/requests.js";
 import { checkExternalUrl } from "../lib/urlSafety.js";
 
@@ -68,13 +69,13 @@ const notFound = () => new ApiError("NOT_FOUND", 404, "Character not found");
 router.get("/", async (req, res) => {
   try {
     const characters = await req.prisma.character.findMany({
+      take: listLimit(req),
       orderBy: { createdAt: "desc" },
       include: { _count: { select: { content: true, submissions: true } } },
     });
     res.json(characters);
   } catch (err) {
-    console.error("GET /characters error:", err);
-    res.status(500).json({ error: "Failed to fetch characters" });
+    return routeError(res, err, "Failed to fetch characters", "GET /characters");
   }
 });
 
@@ -88,17 +89,17 @@ router.get("/:id", async (req, res) => {
         submissions: { include: { campaign: true } },
       },
     });
-    if (!character) return res.status(404).json({ error: "Character not found" });
+    if (!character) return sendError(res, new ApiError("NOT_FOUND", 404, "Character not found"));
     res.json(character);
   } catch (err) {
-    console.error("GET /characters/:id error:", err);
-    res.status(500).json({ error: "Failed to fetch character" });
+    return routeError(res, err, "Failed to fetch character", "GET /characters/:id");
   }
 });
 
 // POST /api/characters — create
 router.post("/", async (req, res) => {
   try {
+    validateBody(req.body, SCHEMAS.character);
     assertSafeReference(req.body);
     const character = await createWithNextCharacterId(req.prisma, {
         name: req.body.name,
@@ -128,15 +129,14 @@ router.post("/", async (req, res) => {
     });
     res.status(201).json(character);
   } catch (err) {
-    if (err instanceof ApiError) return sendError(res, err);
-    console.error("POST /characters error:", err);
-    res.status(500).json({ error: "Failed to create character" });
+    return routeError(res, err, "Failed to create character", "POST /characters");
   }
 });
 
 // PUT /api/characters/:id — update
 router.put("/:id", async (req, res) => {
   try {
+    validateBody(req.body, SCHEMAS.character, { partial: true });
     assertSafeReference(req.body);
     const data = {};
     const fields = {
@@ -172,9 +172,7 @@ router.put("/:id", async (req, res) => {
     });
     res.json(character);
   } catch (err) {
-    if (err instanceof ApiError) return sendError(res, err);
-    console.error("PUT /characters/:id error:", err);
-    res.status(500).json({ error: "Failed to update character" });
+    return routeError(res, err, "Failed to update character", "PUT /characters/:id");
   }
 });
 
@@ -184,8 +182,7 @@ router.delete("/:id", async (req, res) => {
     await req.prisma.character.delete({ where: { id: req.params.id } });
     res.json({ success: true });
   } catch (err) {
-    console.error("DELETE /characters/:id error:", err);
-    res.status(500).json({ error: "Failed to delete character" });
+    return routeError(res, err, "Failed to delete character", "DELETE /characters/:id");
   }
 });
 
@@ -244,9 +241,7 @@ router.post("/:id/generate-image", async (req, res) => {
     const current = await req.prisma.character.findUnique({ where: { id: character.id } });
     res.status(201).json({ candidate, character: current, replayed: result.replayed === true });
   } catch (err) {
-    if (err instanceof ApiError) return sendError(res, err);
-    console.error("POST /characters/:id/generate-image error:", err.message);
-    res.status(500).json({ error: "Failed to generate image", code: "INTERNAL_ERROR" });
+    return routeError(res, err, "Failed to generate image", "POST /characters/:id/generate-image");
   }
 });
 
@@ -256,14 +251,13 @@ router.get("/:id/images", async (req, res) => {
     const character = await req.prisma.character.findUnique({ where: { id: req.params.id } });
     if (!character) throw notFound();
     const images = await req.prisma.characterImage.findMany({
+      take: listLimit(req),
       where: { characterId: character.id },
       orderBy: { createdAt: "desc" },
     });
     res.json({ referenceImageUrl: character.referenceImageUrl, images });
   } catch (err) {
-    if (err instanceof ApiError) return sendError(res, err);
-    console.error("GET /characters/:id/images error:", err.message);
-    res.status(500).json({ error: "Failed to list images", code: "INTERNAL_ERROR" });
+    return routeError(res, err, "Failed to list images", "GET /characters/:id/images");
   }
 });
 
@@ -316,9 +310,7 @@ router.post("/:id/reference-image", async (req, res) => {
     });
     res.json(result);
   } catch (err) {
-    if (err instanceof ApiError) return sendError(res, err);
-    console.error("POST /characters/:id/reference-image error:", err.message);
-    res.status(500).json({ error: "Failed to set reference image", code: "INTERNAL_ERROR" });
+    return routeError(res, err, "Failed to set reference image", "POST /characters/:id/reference-image");
   }
 });
 
@@ -326,7 +318,7 @@ router.post("/:id/reference-image", async (req, res) => {
 router.post("/:id/generate-video", async (req, res) => {
   try {
     const character = await req.prisma.character.findUnique({ where: { id: req.params.id } });
-    if (!character) return res.status(404).json({ error: "Character not found", code: "NOT_FOUND" });
+    if (!character) return sendError(res, new ApiError("NOT_FOUND", 404, "Character not found"));
 
     const duration = String(req.body?.duration ?? "5");
     if (!["5", "10"].includes(duration)) {
@@ -343,9 +335,7 @@ router.post("/:id/generate-video", async (req, res) => {
     );
     res.json({ videoUrl: result.videoUrl, character });
   } catch (err) {
-    if (err instanceof ApiError) return sendError(res, err);
-    console.error("POST /characters/:id/generate-video error:", err.message);
-    res.status(500).json({ error: "Failed to generate video", code: "INTERNAL_ERROR" });
+    return routeError(res, err, "Failed to generate video", "POST /characters/:id/generate-video");
   }
 });
 

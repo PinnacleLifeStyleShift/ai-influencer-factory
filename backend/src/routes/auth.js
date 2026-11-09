@@ -10,6 +10,8 @@ export function createSessionHandler({ env, provider, sessions }) {
       const principal = m ? await provider.authenticate(m[1].trim()) : null;
       if (!principal) return sendError(res, new ApiError("AUTH_REQUIRED", 401, "Invalid credential"));
       const { token, session } = await sessions.create(principal, { provider: provider.name, ttlMs: sessionTtlMs(env) });
+      // Lets the audit trail attribute the new session to its principal.
+      req.principal = { id: principal.id, role: principal.role, workspaceId: session.workspaceId, sessionId: session.id };
       res.status(201).json({
         sessionToken: token,
         expiresAt: session.expiresAt,

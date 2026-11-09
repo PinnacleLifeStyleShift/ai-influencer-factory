@@ -1,5 +1,6 @@
 import { Router } from "express";
-import { ApiError, sendError } from "../lib/errors.js";
+import { validateBody, listLimit, SCHEMAS } from "../lib/validate.js";
+import { ApiError, sendError, routeError } from "../lib/errors.js";
 
 /**
  * Generic content routes are a planning calendar. They can never mark content
@@ -44,6 +45,7 @@ router.get("/", async (req, res) => {
     }
 
     const content = await req.prisma.content.findMany({
+      take: listLimit(req),
       where,
       orderBy: { scheduledDate: "asc" },
       include: { character: { select: { id: true, name: true, characterId: true } } },
@@ -57,8 +59,7 @@ router.get("/", async (req, res) => {
     }));
     res.json(mapped);
   } catch (err) {
-    console.error("GET /content error:", err);
-    res.status(500).json({ error: "Failed to fetch content" });
+    return routeError(res, err, "Failed to fetch content", "GET /content");
   }
 });
 
@@ -69,17 +70,17 @@ router.get("/:id", async (req, res) => {
       where: { id: req.params.id },
       include: { character: true },
     });
-    if (!item) return res.status(404).json({ error: "Content not found" });
+    if (!item) return sendError(res, new ApiError("NOT_FOUND", 404, "Content not found"));
     res.json(item);
   } catch (err) {
-    console.error("GET /content/:id error:", err);
-    res.status(500).json({ error: "Failed to fetch content" });
+    return routeError(res, err, "Failed to fetch content", "GET /content/:id");
   }
 });
 
 // POST /api/content — create
 router.post("/", async (req, res) => {
   try {
+    validateBody(req.body, SCHEMAS.content);
     assertStatusChange(req.body.status, null);
     const item = await req.prisma.content.create({
       data: {
@@ -98,15 +99,14 @@ router.post("/", async (req, res) => {
     });
     res.status(201).json({ ...item, character_name: item.character?.name || "" });
   } catch (err) {
-    if (err instanceof ApiError) return sendError(res, err);
-    console.error("POST /content error:", err);
-    res.status(500).json({ error: "Failed to create content" });
+    return routeError(res, err, "Failed to create content", "POST /content");
   }
 });
 
 // PUT /api/content/:id — update
 router.put("/:id", async (req, res) => {
   try {
+    validateBody(req.body, SCHEMAS.content, { partial: true });
     const existing = await req.prisma.content.findUnique({ where: { id: req.params.id } });
     if (!existing) return sendError(res, new ApiError("NOT_FOUND", 404, "Content not found"));
     assertStatusChange(req.body.status, existing);
@@ -138,9 +138,7 @@ router.put("/:id", async (req, res) => {
     });
     res.json({ ...item, character_name: item.character?.name || "" });
   } catch (err) {
-    if (err instanceof ApiError) return sendError(res, err);
-    console.error("PUT /content/:id error:", err);
-    res.status(500).json({ error: "Failed to update content" });
+    return routeError(res, err, "Failed to update content", "PUT /content/:id");
   }
 });
 
@@ -150,8 +148,7 @@ router.delete("/:id", async (req, res) => {
     await req.prisma.content.delete({ where: { id: req.params.id } });
     res.json({ success: true });
   } catch (err) {
-    console.error("DELETE /content/:id error:", err);
-    res.status(500).json({ error: "Failed to delete content" });
+    return routeError(res, err, "Failed to delete content", "DELETE /content/:id");
   }
 });
 

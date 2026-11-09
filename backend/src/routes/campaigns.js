@@ -1,3 +1,5 @@
+import { validateBody, listLimit, SCHEMAS } from "../lib/validate.js";
+import { ApiError, sendError, routeError } from "../lib/errors.js";
 import { Router } from "express";
 const router = Router();
 
@@ -5,6 +7,7 @@ const router = Router();
 router.get("/", async (req, res) => {
   try {
     const campaigns = await req.prisma.campaign.findMany({
+      take: listLimit(req),
       orderBy: { createdAt: "desc" },
       include: {
         submissions: {
@@ -24,8 +27,7 @@ router.get("/", async (req, res) => {
     }));
     res.json(mapped);
   } catch (err) {
-    console.error("GET /campaigns error:", err);
-    res.status(500).json({ error: "Failed to fetch campaigns" });
+    return routeError(res, err, "Failed to fetch campaigns", "GET /campaigns");
   }
 });
 
@@ -40,17 +42,17 @@ router.get("/:id", async (req, res) => {
         },
       },
     });
-    if (!campaign) return res.status(404).json({ error: "Campaign not found" });
+    if (!campaign) return sendError(res, new ApiError("NOT_FOUND", 404, "Campaign not found"));
     res.json(campaign);
   } catch (err) {
-    console.error("GET /campaigns/:id error:", err);
-    res.status(500).json({ error: "Failed to fetch campaign" });
+    return routeError(res, err, "Failed to fetch campaign", "GET /campaigns/:id");
   }
 });
 
 // POST /api/campaigns — create
 router.post("/", async (req, res) => {
   try {
+    validateBody(req.body, SCHEMAS.campaign);
     const campaign = await req.prisma.campaign.create({
       data: {
         name: req.body.name,
@@ -65,14 +67,14 @@ router.post("/", async (req, res) => {
     });
     res.status(201).json({ ...campaign, submissions: [] });
   } catch (err) {
-    console.error("POST /campaigns error:", err);
-    res.status(500).json({ error: "Failed to create campaign" });
+    return routeError(res, err, "Failed to create campaign", "POST /campaigns");
   }
 });
 
 // PUT /api/campaigns/:id — update
 router.put("/:id", async (req, res) => {
   try {
+    validateBody(req.body, SCHEMAS.campaign, { partial: true });
     const data = {};
     const fields = {
       name: "name", brand: "brand", platform: "platform", brief: "brief",
@@ -89,8 +91,7 @@ router.put("/:id", async (req, res) => {
     });
     res.json(campaign);
   } catch (err) {
-    console.error("PUT /campaigns/:id error:", err);
-    res.status(500).json({ error: "Failed to update campaign" });
+    return routeError(res, err, "Failed to update campaign", "PUT /campaigns/:id");
   }
 });
 
@@ -100,14 +101,14 @@ router.delete("/:id", async (req, res) => {
     await req.prisma.campaign.delete({ where: { id: req.params.id } });
     res.json({ success: true });
   } catch (err) {
-    console.error("DELETE /campaigns/:id error:", err);
-    res.status(500).json({ error: "Failed to delete campaign" });
+    return routeError(res, err, "Failed to delete campaign", "DELETE /campaigns/:id");
   }
 });
 
 // POST /api/campaigns/:id/submissions — submit character to campaign
 router.post("/:id/submissions", async (req, res) => {
   try {
+    validateBody(req.body, SCHEMAS.submission);
     const submission = await req.prisma.campaignSubmission.create({
       data: {
         campaignId: req.params.id,
@@ -119,8 +120,7 @@ router.post("/:id/submissions", async (req, res) => {
     });
     res.status(201).json({ ...submission, character_name: submission.character?.name || "" });
   } catch (err) {
-    console.error("POST /campaigns/:id/submissions error:", err);
-    res.status(500).json({ error: "Failed to create submission" });
+    return routeError(res, err, "Failed to create submission", "POST /campaigns/:id/submissions");
   }
 });
 

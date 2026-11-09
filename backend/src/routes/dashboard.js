@@ -1,3 +1,4 @@
+import { ApiError, sendError, routeError } from "../lib/errors.js";
 import { Router } from "express";
 const router = Router();
 
@@ -45,8 +46,7 @@ router.get("/", async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("GET /dashboard error:", err);
-    res.status(500).json({ error: "Failed to fetch dashboard data" });
+    return routeError(res, err, "Failed to fetch dashboard data", "GET /dashboard");
   }
 });
 

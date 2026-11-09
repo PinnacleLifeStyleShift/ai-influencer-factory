@@ -1,10 +1,11 @@
 import { Router } from "express";
-import { ApiError, sendError } from "../lib/errors.js";
+import { ApiError, sendError, routeError } from "../lib/errors.js";
 import {
   DESTINATIONS, serializeItem, snapshotHash, mediaTypeOf, invalidatingChange,
 } from "../lib/revision.js";
 import crypto from "crypto";
 import { checkExternalUrl } from "../lib/urlSafety.js";
+import { validateBody, listLimit, SCHEMAS } from "../lib/validate.js";
 import { readIdempotencyKey, isUniqueViolation } from "../lib/requests.js";
 import {
   discoverTrends, analyzeTrendRelevance, SUPPORTED_PLATFORMS, SUPPORTED_NICHES, MAX_TREND_COUNT,
@@ -21,9 +22,7 @@ const handle = (label, fn) => async (req, res) => {
   try {
     await fn(req, res);
   } catch (err) {
-    if (err instanceof ApiError) return sendError(res, err);
-    console.error(`${label} error:`, err?.message || err);
-    return res.status(500).json({ error: `Failed: ${label}`, code: "INTERNAL_ERROR" });
+    return routeError(res, err, `Failed: ${label}`, label);
   }
 };
 
@@ -101,7 +100,7 @@ router.get("/", handle("GET /pipeline", async (req, res) => {
   const where = {};
   if (typeof req.query.stage === "string") where.stage = req.query.stage;
   if (typeof req.query.character_id === "string") where.characterId = req.query.character_id;
-  const items = await req.prisma.pipelineItem.findMany({ where, orderBy: { createdAt: "desc" }, include: ITEM_INCLUDE });
+  const items = await req.prisma.pipelineItem.findMany({ where, orderBy: { createdAt: "desc" }, include: ITEM_INCLUDE, take: listLimit(req) });
   res.json(items.map(serializeItem));
 }));
 
@@ -112,6 +111,7 @@ router.get("/trends", handle("GET /pipeline/trends", async (req, res) => {
   if (typeof req.query.platform === "string") where.platform = req.query.platform;
   if (typeof req.query.status === "string") where.status = req.query.status;
   const trends = await req.prisma.trend.findMany({
+    take: listLimit(req),
     where,
     orderBy: { trendScore: "desc" },
     include: { scripts: { select: { id: true, title: true, status: true } } },
@@ -124,6 +124,7 @@ router.get("/scripts", handle("GET /pipeline/scripts", async (req, res) => {
   if (typeof req.query.status === "string") where.status = req.query.status;
   if (typeof req.query.character_id === "string") where.characterId = req.query.character_id;
   const scripts = await req.prisma.script.findMany({
+    take: listLimit(req),
     where,
     orderBy: { createdAt: "desc" },
     include: {
