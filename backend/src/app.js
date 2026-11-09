@@ -9,6 +9,7 @@ import contentRoutes from "./routes/content.js";
 import campaignRoutes from "./routes/campaigns.js";
 import dashboardRoutes from "./routes/dashboard.js";
 import pipelineRoutes from "./routes/pipeline.js";
+import packageRoutes from "./routes/packages.js";
 
 import { buildCorsOptions } from "./lib/cors.js";
 import { sendError, ApiError, routeError } from "./lib/errors.js";
@@ -111,6 +112,7 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
   api.use("/content", contentRoutes);
   api.use("/campaigns", campaignRoutes);
   api.use("/dashboard", dashboardRoutes);
+  api.use("/pipeline", packageRoutes);
   api.use("/pipeline", pipelineRoutes);
   api.use((_req, res) => sendError(res, new ApiError("NOT_FOUND", 404, "Not found")));
 

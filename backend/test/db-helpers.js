@@ -28,7 +28,7 @@ export function newClient() {
 }
 
 const TABLES = [
-  "rights_records", "character_versions", "audit_events", "sessions", "generation_reservations", "generation_applications", "character_images", "campaign_submissions", "campaigns", "pipeline_items",
+  "script_versions", "rights_records", "character_versions", "audit_events", "sessions", "generation_reservations", "generation_applications", "character_images", "campaign_submissions", "campaigns", "pipeline_items",
   "scripts", "trends", "content", "characters",
 ];
 
@@ -54,6 +54,7 @@ export async function makeReviewItem(prisma, overrides = {}) {
       stage: "review",
       characterId: character.id,
       characterVersionId: version.version.id,
+      disclosure: "This is a fictional, AI-generated character.",
       imageUrl: "https://example.test/still.png",
       caption: "Synthetic caption",
       hashtags: "#synthetic",

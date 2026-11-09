@@ -34,3 +34,4 @@ is no longer used at build time, at startup, or in tests.
 | `20261110000000_sessions` | Additive only: `sessions` table (hashed session tokens, expiry, revocation) |
 | `20261110010000_audit_events` | Additive only: `audit_events` table (redacted action evidence) |
 | `20261110020000_character_versions_rights` | Additive only: `character_versions`, `rights_records`, version pins and recorded generation inputs |
+| `20261110030000_content_packages` | Adds idea kinds/observation fields, `script_versions`, package fields on `pipeline_items`; makes `trends.trend_score` nullable and clears the random scores on simulated fixture rows (the only data change) |

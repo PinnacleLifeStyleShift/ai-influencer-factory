@@ -177,9 +177,17 @@ model Trend {
   topic         String
   description   String?
   hashtags      String[] @default([])
-  trendScore    Float    @default(0) @map("trend_score")
+  // Null = unknown. Only real, sourced data may ever fill this in.
+  trendScore    Float?   @map("trend_score")
   source        String?  // URL or reference
   provenance    String   @default("unknown") // simulated_fixture | manual | verified_source
+  // manual_idea | observation | simulated_fixture
+  kind          String   @default("simulated_fixture")
+  // Observations only: where and when it was seen, and exactly what was seen.
+  sourceUrl     String?  @map("source_url")
+  observedAt    DateTime? @map("observed_at")
+  observation   String?
+  recordedBy    String?  @map("recorded_by")
   status        String   @default("new") // new, scripted, used, expired
 
   scripts       Script[]
@@ -202,6 +210,8 @@ model Script {
   duration      String?  // "15s", "30s", "60s"
   tone          String?  // funny, educational, dramatic, etc.
   status        String   @default("draft") // draft, approved, in_production, completed
+  // Latest ScriptVersion number; the fields above mirror that version.
+  currentVersion Int     @default(0) @map("current_version")
 
   trendId       String?  @map("trend_id")
   trend         Trend?   @relation(fields: [trendId], references: [id])
@@ -210,6 +220,7 @@ model Script {
   character     Character? @relation(fields: [characterId], references: [id])
 
   pipelineItems PipelineItem[]
+  versions      ScriptVersion[]
 
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
@@ -257,6 +268,12 @@ model PipelineItem {
   // applied only by the holder of this exact token at the expected revision.
   // Character version this item was written for; part of the approved snapshot.
   characterVersionId  String?   @map("character_version_id")
+  // Content package (all part of the approved snapshot):
+  scriptVersionId String?  @map("script_version_id")
+  // [{ shotIndex, shotKey, kind, url, durationSec, durationSource, reservationId }]
+  shotMedia       Json     @default("[]") @map("shot_media")
+  disclosure      String?
+  exportSettings  Json?    @map("export_settings")
   generationClaim     String?   @map("generation_claim")
   generationClaimedAt DateTime? @map("generation_claimed_at")
 
@@ -404,4 +421,32 @@ model RightsRecord {
 
   @@index([imageId, recordedAt])
   @@map("rights_records")
+}
+
+// ─── SCRIPT VERSIONS ─────────────────────────────────────────
+// Immutable script versions with their shot plan. Editing a script creates
+// a new version; content pins one, so an edit never silently changes
+// approved content.
+
+model ScriptVersion {
+  id                 String   @id @default(cuid())
+  scriptId           String   @map("script_id")
+  script             Script   @relation(fields: [scriptId], references: [id], onDelete: Cascade)
+  version            Int
+  hook               String?
+  body               String?
+  callToAction       String?  @map("call_to_action")
+  speakingPaceWpm    Int      @map("speaking_pace_wpm")
+  targetDurationSec  Int      @map("target_duration_sec")
+  // [{ claim, sourceUrl?, observedAt?, basis: "source" | "fictional" }]
+  evidence           Json     @default("[]")
+  shotPlan           Json     @map("shot_plan")
+  plannedDurationSec Float    @map("planned_duration_sec")
+  characterVersionId String?  @map("character_version_id")
+  contentHash        String   @map("content_hash")
+  createdBy          String?  @map("created_by")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  @@unique([scriptId, version])
+  @@map("script_versions")
 }

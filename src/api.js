@@ -199,6 +199,11 @@ export const pipeline = {
   generateContent: (data, { idempotencyKey } = {}) =>
     request("/api/pipeline/generate-content", { method: "POST", body: JSON.stringify(data), idempotencyKey }),
   update: (id, data) => request(`/api/pipeline/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  package: (id) => request(`/api/pipeline/${id}/package`),
+  updateScript: (scriptId, data) => request(`/api/pipeline/scripts/${scriptId}`, { method: "PUT", body: JSON.stringify(data) }),
+  scriptVersions: (scriptId) => request(`/api/pipeline/scripts/${scriptId}/versions`),
+  addIdea: (data) => request("/api/pipeline/ideas", { method: "POST", body: JSON.stringify(data) }),
+  addObservation: (data) => request("/api/pipeline/observations", { method: "POST", body: JSON.stringify(data) }),
   generateCaption: (data) =>
     request("/api/pipeline/generate-caption", { method: "POST", body: JSON.stringify(data) }),
   approve: (id, data = {}) =>

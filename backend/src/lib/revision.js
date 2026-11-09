@@ -12,7 +12,11 @@ import { stableStringify } from "../services/spendLedger.js";
 export const DESTINATIONS = Object.freeze(["TikTok", "Instagram", "YouTube"]);
 
 // characterVersionId: approval is for content made from a specific version.
-export const PUBLISH_FIELDS = Object.freeze(["imageUrl", "videoUrl", "caption", "hashtags", "platform", "scriptId", "characterVersionId"]);
+export const PUBLISH_FIELDS = Object.freeze([
+  "imageUrl", "videoUrl", "caption", "hashtags", "platform", "scriptId", "characterVersionId",
+  // Content package: script version, per-shot media, disclosure, export settings.
+  "scriptVersionId", "shotMedia", "disclosure", "exportSettings",
+]);
 
 export function snapshotOf(item) {
   const snap = { pipelineItemId: item.id, revision: item.revision };

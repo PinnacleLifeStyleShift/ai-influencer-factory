@@ -1,6 +1,6 @@
 # Current baseline
 
-Recorded 2026-11-09. Updated for branch `pkg-b-character-bible` (stacked on `pkg-a-identity-baseline`, which is stacked on PR #1).
+Recorded 2026-11-09. Updated for branch `pkg-c-content-packages` (stacked on `pkg-b-character-bible` → `pkg-a-identity-baseline` → PR #1).
 No secret values appear here; Railway variables are listed by name only.
 
 Evidence labels:
@@ -42,16 +42,17 @@ Evidence labels:
 | `20261109000000_generation_fencing` | Claims, `generation_applications` (additive) | TESTED LOCALLY, HOSTED CI at `10704fa` |
 | `20261110000000_sessions` | `sessions` table (additive), this branch | TESTED LOCALLY |
 | `20261110010000_audit_events` | `audit_events` table (additive) | TESTED LOCALLY, HOSTED CI at `8ce8ace` |
-| `20261110020000_character_versions_rights` | Versions, rights, pins, recorded inputs (additive), Package B | TESTED LOCALLY |
+| `20261110020000_character_versions_rights` | Versions, rights, pins, recorded inputs (additive), Package B | TESTED LOCALLY, HOSTED CI at `1cfcf9d` |
+| `20261110030000_content_packages` | Idea kinds, script versions, package fields; nullable trend score (fixture scores cleared), Package C | TESTED LOCALLY |
 
 Deploy path: `npm start` → `scripts/migrate-deploy.mjs`. It verifies a pre-migration database is identical to the baseline before recording it, and refuses otherwise. Rollback with Railway's button alone does not work after migration (the old image's `db push` refuses); this was re-tested at `10704fa`. See the deployment checklist doc.
 
 ## Tests at this branch (TESTED LOCALLY)
 
-- Backend `npm test`: 106/106 pass, 0 skipped.
+- Backend `npm test`: 113/113 pass, 0 skipped.
 - Frontend vitest: 10/10 pass.
 - `vite build` passes.
-- Playwright UI auth check and character-bible check: pass.
+- Playwright UI auth, character-bible and content-package checks: pass.
 - `npm audit`: 0 vulnerabilities in both packages.
 - Both workflows run on this branch's PR; see its checks for HOSTED CI results at the exact head.
 
@@ -92,6 +93,21 @@ Not run here: Docker image builds (no Docker daemon in the sandbox; covered by t
 | Duplicate clicks, failures before/after provider, cross-character promotion | Covered by existing and new tests | db-routes, db-generation-races, db-characters |
 | Operator review rubric | Written | docs/review-rubric.md |
 | Real reference conditioning / identity quality | **Not met.** No approved adapter sends references; needs a provider decision and a human pilot | ADR 0003 |
+
+## Package C exit criteria
+
+| Criterion (brief section 7) | Status | Evidence |
+| --- | --- | --- |
+| A mocked 30-second package is composed from a coherent shot plan, with measured duration within a documented tolerance | Met with mocks (tolerance ±max(1 s, 10 %); lengths reported by the mock provider) | db-packages "mocked 30-second package" |
+| Every claim has a source or fictional framing | Met as a pattern-based gate before approval (a floor, not a judge) | db-packages claims test; ADR 0004 |
+| A fixture cannot be mistaken for a real trend | Met: kind at API and UI, no scores, label "Simulated, not a real trend" | db-packages ideas test; content-package e2e |
+| Edits create version history and invalidate old approval | Met (script versions; re-pin bumps revision; background shot generation clears approval) | db-packages |
+| Source-backed observations: URL, time, platform, exact observation | Met (no server-side fetching) | db-packages |
+| Script editing: hook, body, CTA, pace, target length, evidence | Met | db-packages; content-package e2e |
+| Shot plan with per-shot fields; planned-length mismatch flagged | Met | db-packages (long script flagged) |
+| Package view survives refresh and errors | Met | content-package e2e (reload) |
+| Regeneration and replacement are explicit | Met (per-shot generate/regenerate; script edits keep unchanged shots' clips) | db-packages |
+| Rendering one output file / measuring real media | **Not met.** Needs media storage (approval) and a measurement step (Package E) | ADR 0004 |
 
 ## Repository instructions
 

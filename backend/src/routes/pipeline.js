@@ -16,6 +16,11 @@ import { buildPromptFromCharacter } from "../services/imageGeneration.js";
 import { requestHash } from "../services/spendLedger.js";
 import { ensurePublishedVersion, promptSourceOf, promptHash } from "../services/characterVersions.js";
 import { clearanceFor } from "../services/rights.js";
+import {
+  createScriptVersion, initialScriptInput, DEFAULT_DISCLOSURE, DEFAULT_EXPORT_SETTINGS,
+} from "../services/scriptVersions.js";
+import { measurePackage } from "../services/shotPlan.js";
+import { checkClaims } from "../services/claims.js";
 
 const router = Router();
 
@@ -65,7 +70,7 @@ function noLiveClaim(now = Date.now()) {
   };
 }
 
-function claimIsLive(item, now = Date.now()) {
+export function claimIsLive(item, now = Date.now()) {
   return Boolean(item.generationClaim) && Boolean(item.generationClaimedAt) &&
     new Date(item.generationClaimedAt).getTime() >= now - GENERATION_CLAIM_TTL_MS;
 }
@@ -115,7 +120,7 @@ router.get("/trends", handle("GET /pipeline/trends", async (req, res) => {
   const trends = await req.prisma.trend.findMany({
     take: listLimit(req),
     where,
-    orderBy: { trendScore: "desc" },
+    orderBy: { createdAt: "desc" },
     include: { scripts: { select: { id: true, title: true, status: true } } },
   });
   res.json(trends);
@@ -164,7 +169,9 @@ router.post("/discover-trends", handle("POST /pipeline/discover-trends", async (
         topic: trend.topic,
         description: trend.description,
         hashtags: trend.hashtags,
-        trendScore: trend.trendScore,
+        // WHY null: fixture scores were random numbers, not observations.
+        trendScore: null,
+        kind: "simulated_fixture",
         source: trend.source,
         provenance: trend.provenance,
         status: "new",
@@ -220,8 +227,14 @@ router.post("/generate-script", handle("POST /pipeline/generate-script", async (
   // Pin the character version the script was written for; later edits or
   // versions of the character never change this item's inputs.
   const version = await ensurePublishedVersion(req.prisma, character, { by: req.principal?.id });
+  // Version 1 of the script, with its shot plan; the item pins it.
+  const { version: scriptVersion } = await req.prisma.$transaction((tx) =>
+    createScriptVersion(tx, script, initialScriptInput(scriptData), { characterVersion: version, by: req.principal?.id }));
   const pipelineItem = await req.prisma.pipelineItem.create({
-    data: { stage: "draft", scriptId: script.id, characterId, platform: null, characterVersionId: version.id },
+    data: {
+      stage: "draft", scriptId: script.id, characterId, platform: null, characterVersionId: version.id,
+      scriptVersionId: scriptVersion.id, disclosure: DEFAULT_DISCLOSURE, exportSettings: DEFAULT_EXPORT_SETTINGS,
+    },
   });
 
   if (trendId) await req.prisma.trend.update({ where: { id: trendId }, data: { status: "scripted" } });
@@ -259,7 +272,8 @@ router.post("/generate-script", handle("POST /pipeline/generate-script", async (
  *  6. Release the claim; keep the workflow key on failure so a retry resumes.
  */
 router.post("/generate-content", handle("POST /pipeline/generate-content", async (req, res) => {
-  const { pipelineItemId, type = "image", referenceMode = "none" } = req.body || {};
+  const { pipelineItemId, type = "image", referenceMode = "none", shotIndex } = req.body || {};
+  if (shotIndex !== undefined && (!Number.isInteger(shotIndex) || shotIndex < 0 || shotIndex > 99)) throw invalid("shotIndex must be a whole number");
   if (!pipelineItemId || typeof pipelineItemId !== "string") throw invalid("pipelineItemId is required");
   if (!["image", "video"].includes(type)) throw invalid(`Unsupported content type: ${String(type).slice(0, 20)}`);
   // "required": the pinned references must actually be sent to the provider.
@@ -312,11 +326,22 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
     referencesSent = references.map((r) => r.fingerprint);
   }
 
-  const hash = requestHash({ op: "pipeline.generate-content", pipelineItemId, type, referenceMode });
-  const resumable = item.activeWorkflowKey?.startsWith(`${type}|`) ? item.activeWorkflowKey : null;
+  // A single shot of the package (its media goes into shotMedia, not the
+  // item's primary image/video).
+  let shot = null;
+  if (shotIndex !== undefined) {
+    const sv = item.scriptVersionId ? await prisma.scriptVersion.findUnique({ where: { id: item.scriptVersionId } }) : null;
+    if (!sv) throw new ApiError("NO_SHOT_PLAN", 409, "This item has no script version with a shot plan");
+    shot = sv.shotPlan[shotIndex];
+    if (!shot) throw invalid(`shotIndex ${shotIndex} is not in the shot plan (${sv.shotPlan.length} shots)`);
+    if (type !== "video") throw invalid("Shots are generated as video clips (type: video)");
+  }
+  const tag = shot ? `${type}#${shotIndex}` : type;
+  const hash = requestHash({ op: "pipeline.generate-content", pipelineItemId, type, referenceMode, shotIndex: shotIndex ?? null });
+  const resumable = item.activeWorkflowKey?.startsWith(`${tag}|`) ? item.activeWorkflowKey : null;
   const workflowKey = clientKey
-    ? `${type}|client:${clientKey}`
-    : resumable || `${type}|pipe:${item.id}:r${item.revision}`;
+    ? `${tag}|client:${clientKey}`
+    : resumable || `${tag}|pipe:${item.id}:r${item.revision}`;
   // Captured before the claim overwrites it: an unapplied result may only be
   // recovered if this same workflow was the last one started on the item.
   const priorWorkflowKey = item.activeWorkflowKey;
@@ -337,9 +362,13 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
 
   // From the pinned version, never the live draft.
   const prompt = buildPromptFromCharacter(promptSourceOf(version));
-  const motionPrompt = item.script
-    ? `${item.script.hook || ""} ${item.script.body || ""}`.trim().slice(0, 500)
-    : "Subtle natural movement, gentle head turn, cinematic lighting";
+  const motionPrompt = shot
+    ? `${shot.scene}. ${shot.visualAction}. Says: "${shot.dialogue}"`.slice(0, 500)
+    : item.script
+      ? `${item.script.hook || ""} ${item.script.body || ""}`.trim().slice(0, 500)
+      : "Subtle natural movement, gentle head turn, cinematic lighting";
+  // Clip length requested from the provider; the shot's own length decides how much is used.
+  const clipSeconds = shot ? (shot.durationSec <= 5 ? 5 : 10) : 5;
 
   let expectedRevision = item.revision;
   const outcomes = [];
@@ -377,7 +406,7 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
     await prisma.$transaction(async (tx) => {
       const { count } = await tx.pipelineItem.updateMany({
         where: { id: item.id, generationClaim: token, revision: expectedRevision, stage: { not: "scheduled" } },
-        data: invalidatingChange({ ...fields(mediaUrl), characterVersionId: version.id }, "content_generated"),
+        data: invalidatingChange({ ...(await fields(mediaUrl, tx, r)), characterVersionId: version.id }, "content_generated"),
       });
       if (count !== 1) {
         throw new ApiError("GENERATION_SUPERSEDED", 409,
@@ -422,9 +451,25 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
       input: (prev) => ({
         imageUrl: prev.find((p) => p.imageUrl)?.imageUrl || item.imageUrl,
         prompt: motionPrompt,
-        options: { duration: "5", mode: "std" },
+        options: { duration: String(clipSeconds), mode: "std" },
       }),
-      onResult: (r) => applyResult("video", r, (url) => ({ videoUrl: url })),
+      onResult: (r) => applyResult("video", r, shot
+        ? async (url, tx, res) => {
+          // Replace this shot's clip; keep the others. durationSource says
+          // whether the length was reported by the provider or only requested.
+          const cur = await tx.pipelineItem.findUnique({ where: { id: item.id }, select: { shotMedia: true } });
+          const others = (cur?.shotMedia || []).filter((m) => m.shotIndex !== shotIndex);
+          const reported = Number.isFinite(res.durationSec) && res.durationSec > 0;
+          return {
+            shotMedia: [...others, {
+              shotIndex, shotKey: shot.shotKey, kind: "video", url,
+              durationSec: reported ? res.durationSec : clipSeconds,
+              durationSource: reported ? "provider_reported" : "declared",
+              reservationId: res.reservationId || null,
+            }].sort((a, b) => a.shotIndex - b.shotIndex),
+          };
+        }
+        : (url) => ({ videoUrl: url })),
     });
   }
 
@@ -498,6 +543,17 @@ router.patch("/:id", handle("PATCH /pipeline/:id", async (req, res) => {
     }
     changes.platform = body.platform;
   }
+  if (body.disclosure !== undefined) {
+    if (body.disclosure !== null && (typeof body.disclosure !== "string" || body.disclosure.length > 500)) throw invalid("disclosure must be text of at most 500 characters");
+    changes.disclosure = body.disclosure;
+  }
+  if (body.exportSettings !== undefined) {
+    const e = body.exportSettings;
+    if (!e || typeof e !== "object" || !["mp4", "mov"].includes(e.format) || !["9:16", "1:1", "16:9"].includes(e.aspectRatio) || typeof e.burnInCaptions !== "boolean") {
+      throw invalid("exportSettings must be { format: mp4|mov, aspectRatio: 9:16|1:1|16:9, burnInCaptions: boolean }");
+    }
+    changes.exportSettings = { format: e.format, aspectRatio: e.aspectRatio, burnInCaptions: e.burnInCaptions };
+  }
   if (body.revision !== undefined && !Number.isInteger(body.revision)) throw invalid("revision must be an integer");
 
   const item = await req.prisma.pipelineItem.findUnique({ where: { id: req.params.id } });
@@ -507,7 +563,8 @@ router.patch("/:id", handle("PATCH /pipeline/:id", async (req, res) => {
   }
   assertNotScheduled(item);
 
-  const changed = Object.fromEntries(Object.entries(changes).filter(([k, v]) => (item[k] ?? null) !== v));
+  const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  const changed = Object.fromEntries(Object.entries(changes).filter(([k, v]) => !same(item[k], v)));
   if (Object.keys(changed).length > 0) {
     await applyChange(req.prisma, item, invalidatingChange(changed, item.stage === "approved" ? "review" : undefined));
   }
@@ -553,7 +610,28 @@ router.post("/:id/approve", handle("POST /pipeline/:id/approve", async (req, res
       { currentRevision: item.revision, currentSnapshotHash: currentHash });
   }
   if (!item.platform) throw new ApiError("DESTINATION_REQUIRED", 409, "Choose the destination platform before approval");
-  if (!mediaTypeOf(item)) throw new ApiError("MEDIA_REQUIRED", 409, "Generate media before approval");
+  if (!mediaTypeOf(item) && !(item.shotMedia || []).length) throw new ApiError("MEDIA_REQUIRED", 409, "Generate media before approval");
+  // WHY: the synthetic persona must be disclosed in what gets exported, not
+  // only in a footer; and no invented fact may be approved as real.
+  if (!item.disclosure || !item.disclosure.trim()) throw new ApiError("DISCLOSURE_REQUIRED", 409, "Add the synthetic-persona disclosure before approval");
+  const sv = item.scriptVersionId ? await req.prisma.scriptVersion.findUnique({ where: { id: item.scriptVersionId } }) : null;
+  if (sv) {
+    const claims = checkClaims(sv, sv.evidence || [], item.disclosure);
+    if (!claims.ok) {
+      throw new ApiError("CLAIMS_UNSUPPORTED", 409, "Some lines read as facts or real experience without a source or fiction framing",
+        { unsupported: claims.unsupported });
+    }
+    // A multi-shot package must be complete, within the duration tolerance,
+    // and measured (reported by the media source, not just requested).
+    if ((item.shotMedia || []).length) {
+      const m = measurePackage(sv.shotPlan, item.shotMedia, sv.targetDurationSec);
+      if (!m.complete || !m.check.withinTolerance || !m.verified) {
+        throw new ApiError("PACKAGE_INCOMPLETE", 409,
+          "Every shot needs a clip covering its planned length, with a reported (not just requested) duration, within tolerance",
+          { measuredSec: m.measuredSec, check: m.check, verified: m.verified, perShot: m.perShot });
+      }
+    }
+  }
   // WHY: approving media that a running generation is about to replace would
   // approve something nobody will see.
   if (claimIsLive(item)) throw generationInProgress();
