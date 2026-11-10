@@ -98,7 +98,8 @@ export default function ReviewExport({ item, hasShots, onChanged }) {
     setResult(null);
     setBusy(true);
     try {
-      const r = await api.pipeline.createExport(item.id);
+      // The exact version on screen; a change meanwhile is a conflict, not a surprise export.
+      const r = await api.pipeline.createExport(item.id, { expectedRevision: item.revision, approvedHash: item.approvedHash });
       setResult({ ok: true, export: r.export, replayed: r.replayed });
     } catch (e) {
       setResult({ ok: false, message: e.message, failures: e.details?.failures || [] });
@@ -117,6 +118,16 @@ export default function ReviewExport({ item, hasShots, onChanged }) {
   const zone = viewerZone();
   return (
     <section className="border-t border-[#2a2a3a] pt-4 mt-4 min-w-0" aria-label="Review, schedule and export">
+      {item.rightsHoldAt && (
+        <div className="mb-3 p-3 rounded-lg border border-red-400/40 text-[11px] text-red-300" role="alert">
+          <div className="font-semibold">On hold: {item.rightsHoldReason}</div>
+          <div className="text-zinc-400">Approval, scheduling, export and publishing stop until the owner reviews this item.</div>
+          <button className={`${ghost} mt-2`} disabled={busy} onClick={() => {
+            const note = window.prompt("What did you review (e.g. regenerated without the revoked reference)?");
+            if (note) quiet(run(() => api.pipeline.clearRightsHold(item.id, note), "Hold cleared"));
+          }}>Clear hold after review (owner)</button>
+        </div>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 [&>div]:min-w-0">
         <div>
           <div className={sub}>Review</div>
@@ -158,6 +169,13 @@ export default function ReviewExport({ item, hasShots, onChanged }) {
         <div>
           <div className={sub}>Export (a download; nothing is posted)</div>
           {hasShots && !scheduled && <button className={`${ghost} mb-2 mr-2`} disabled={busy} onClick={measure}>Measure clip lengths from files</button>}
+          {hasShots && !scheduled && (
+            <button className={`${ghost} mb-2 mr-2`} disabled={busy}
+              onClick={() => quiet(run(() => api.pipeline.assemble(item.id), "Rendered into one video from the measured clips. Approval was cleared: review the rendered file."))}>
+              Render one video from the clips
+            </button>
+          )}
+          {item.renderedAssetId && <div className="text-[11px] text-zinc-400 mb-2">Distributed as the rendered file (its hash is part of the approval).</div>}
           <button className={btn} disabled={busy || !item.approvalCurrent} onClick={doExport}
             title={item.approvalCurrent ? "" : "Only the current approved version can be exported"}>
             Export approved version
@@ -182,7 +200,13 @@ export default function ReviewExport({ item, hasShots, onChanged }) {
                   <span className={e.current ? "text-green-400" : "text-zinc-500"}>{e.current ? "Current" : "Superseded"}</span>{" "}
                   · revision {e.revision} · {e.manifestHash.slice(0, 10)}…{" "}
                   <button className="underline focus:outline focus:outline-2 focus:outline-[#C8FF00]" onClick={() => download(e, "json")}>JSON</button>{" "}
-                  <button className="underline focus:outline focus:outline-2 focus:outline-[#C8FF00]" onClick={() => download(e, "text")}>Readable</button>
+                  <button className="underline focus:outline focus:outline-2 focus:outline-[#C8FF00]" onClick={() => download(e, "text")}>Readable</button>{" "}
+                  <button className="underline focus:outline focus:outline-2 focus:outline-[#C8FF00]" onClick={async () => {
+                    try {
+                      const v = await api.pipeline.verifyExport(item.id, e.id);
+                      setMessage(v.intact ? "All files present and unchanged" : `Incomplete: ${v.missing.length} missing, ${v.changed.length} changed`);
+                    } catch (err) { setMessage(err.message); }
+                  }}>Verify files</button>
                 </li>
               ))}
             </ul>

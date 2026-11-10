@@ -160,6 +160,13 @@ export default function CharacterBible({ character, refreshKey, onCharacterChang
               {img.rights && !img.rights.approvedAt && (
                 <button className={`${link} block`} disabled={busy} onClick={() => approve(img)}>Approve rights (owner)</button>
               )}
+              {img.rights?.approvedAt && !img.rights?.revokedAt && (
+                <button className={`${link} block text-red-300`} disabled={busy} onClick={() => {
+                  const reason = window.prompt("Why are these rights revoked? Affected unpublished content will be held for review.");
+                  if (reason) act(() => api.characterImages.revokeRights(img.id, reason), "Rights revoked; affected unpublished content is on hold");
+                }}>Revoke rights (owner)</button>
+              )}
+              {img.rights?.revokedAt && <div className="text-[10px] text-red-300">Rights revoked: {img.rights.revokeReason}</div>}
             </div>
           ))}
         </div>
