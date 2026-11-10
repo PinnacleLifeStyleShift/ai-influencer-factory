@@ -18,7 +18,8 @@ Statuses are kept separate, as the prompt requires:
 | [#11](https://github.com/PinnacleLifeStyleShift/ai-influencer-factory/pull/11) | `pkg-j-reconciliation-cas` | Reconciliation compare-and-swap (publishing defect) | Full suite 188/188 + 8 browser checks | Green `dc0f850` |
 | [#12](https://github.com/PinnacleLifeStyleShift/ai-influencer-factory/pull/12) | `pkg-k-rights-revocation` | 2: revocation holds, pre-submit rights recheck, shot-plan edges | 194/194 (isolated worktree) | Green `90f70fc` |
 | [#13](https://github.com/PinnacleLifeStyleShift/ai-influencer-factory/pull/13) | `pkg-l-media-assembly` | 4: AssetVersion, deterministic assembly | 199/199 + 8 browser checks (isolated) | Green `8036d58`; **5 assembly tests skipped there (no ffmpeg)**; ffmpeg added to CI in #14 |
-| [#14](https://github.com/PinnacleLifeStyleShift/ai-influencer-factory/pull/14) | `pkg-m-operations` | Operations, kill switch, redaction, migration gates | See PR | See PR |
+| [#14](https://github.com/PinnacleLifeStyleShift/ai-influencer-factory/pull/14) | `pkg-m-operations` | Operations, kill switch, redaction, migration gates | Browser checks 8/8 (isolated); backend fix for 3 unit tests included | Green `aa55c64`: 206/206, 0 skipped |
+| #15 | `pkg-n-strict-contracts` | Unknown-field refusal, export request contract, export integrity, retention policy | See PR | See PR |
 
 ## Story and acceptance matrix
 
@@ -41,7 +42,10 @@ Statuses are kept separate, as the prompt requires:
 | IF12-01 parallel resolutions give one decision | Done (#11) | `db-reconciliation-race` (two PostgreSQL connections) |
 | IF12-02 no sensitive payload or bootstrap token in logs or operations views | Done (#14); a query-string leak found and fixed | `db-operations` secret markers |
 | IF13-01 an unavailable provider doesn't fall back | Done (gate, earlier) | `generation-gate` |
-| IF13-02 expired storage links and quota failures keep accurate state | **Partial:** missing/oversized media keep accurate state. No signed links exist (storage not approved) | `db-assembly`, `db-review-export` |
+| IF13-02 expired storage links and quota failures keep accurate state | **Partial:** missing, oversized or replaced media keep accurate state, and exports re-verify their files (#15). No signed links exist (storage not approved) | `db-assembly`, `db-review-export`, `db-contracts` |
+| Package 1: reject unknown security-sensitive fields | Done (#15) | `db-contracts` |
+| Package 4: export with expected revision, approval and state | Done (#15): `expectedRevision` + `approvedHash`, `exportId`, `state` (synchronous: ready or an error) | `db-contracts` |
+| Operations: retention defined per category; provenance deletion never looks complete | Done as a typed owner decision: unset means nothing is deleted. Export verification reports deleted or replaced files (#15) | `db-contracts` |
 | IF14-01 opposing resolutions race: one commits, no duplicate audit | Done (#11) | `db-reconciliation-race` |
 | IF14-02 mixed-case/trailing-slash publishing endpoints enforce the same permission | Done (#10) | `auth-route-matrix` |
 | IF15-01 an absent analytics adapter leaves metrics unknown | Done (#8) | `db-measurement` |

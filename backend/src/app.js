@@ -17,6 +17,7 @@ import { buildCorsOptions } from "./lib/cors.js";
 import { sendError, ApiError, routeError } from "./lib/errors.js";
 import { requireAuthConfigured, requireSession } from "./middleware/auth.js";
 import { allow } from "./auth/permissions.js";
+import { onlyFields } from "./lib/requests.js";
 import { requestId } from "./middleware/requestId.js";
 import { createOwnerTokenProvider } from "./auth/providers.js";
 import { createSessionStore } from "./auth/sessions.js";
@@ -155,7 +156,7 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
   api.get("/system/operations", allow(["admin"]), async (_req, res, next) => {
     try { res.json(await operationsView(prisma)); } catch (err) { next(err); }
   });
-  api.post("/system/generation-switch", allow(["admin"]), async (req, res, next) => {
+  api.post("/system/generation-switch", allow(["admin"]), onlyFields(["paused", "reason"]), async (req, res, next) => {
     try { res.json(await setGenerationPause(prisma, { paused: req.body?.paused, reason: req.body?.reason, by: req.principal?.id })); }
     catch (err) { if (err instanceof ApiError) return sendError(res, err); next(err); }
   });

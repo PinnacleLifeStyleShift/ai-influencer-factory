@@ -1,4 +1,5 @@
 import { secureRouter } from "../lib/secureRouter.js";
+import { onlyFields } from "../lib/requests.js";
 import { ApiError, sendError } from "../lib/errors.js";
 import { sessionTtlMs } from "../auth/sessions.js";
 
@@ -33,7 +34,7 @@ export function authRoutes({ sessions }) {
       res.json({ success: true });
     } catch (err) { next(err); }
   });
-  router.post("/sessions/revoke-all", ["admin"], async (req, res, next) => {
+  router.post("/sessions/revoke-all", ["admin"], onlyFields([]), async (req, res, next) => {
     try {
       const revoked = await sessions.revokeAll(req.principal.id);
       res.json({ success: true, revoked });

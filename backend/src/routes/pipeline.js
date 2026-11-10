@@ -1,4 +1,5 @@
 import { secureRouter } from "../lib/secureRouter.js";
+import { onlyFields } from "../lib/requests.js";
 import { ApiError, sendError, routeError } from "../lib/errors.js";
 import {
   DESTINATIONS, serializeItem, snapshotHash, mediaTypeOf, invalidatingChange,
@@ -303,7 +304,7 @@ router.post("/generate-script", ["edit"], handle("POST /pipeline/generate-script
  *     no other workflow has started on the item since.
  *  6. Release the claim; keep the workflow key on failure so a retry resumes.
  */
-router.post("/generate-content", ["generate", "spend"], handle("POST /pipeline/generate-content", async (req, res) => {
+router.post("/generate-content", ["generate", "spend"], onlyFields(["pipelineItemId", "type", "referenceMode", "shotIndex", "confirmReplaceApproved"]), handle("POST /pipeline/generate-content", async (req, res) => {
   const { pipelineItemId, type = "image", referenceMode = "none", shotIndex, confirmReplaceApproved } = req.body || {};
   if (shotIndex !== undefined && (!Number.isInteger(shotIndex) || shotIndex < 0 || shotIndex > 99)) throw invalid("shotIndex must be a whole number");
   if (!pipelineItemId || typeof pipelineItemId !== "string") throw invalid("pipelineItemId is required");
@@ -677,7 +678,7 @@ router.delete("/:id", ["edit"], handle("DELETE /pipeline/:id", async (req, res) 
 
 // POST /api/pipeline/:id/approve { revision, snapshotHash, notes? }
 // Approves exactly the snapshot the reviewer saw.
-router.post("/:id/approve", ["approve"], handle("POST /pipeline/:id/approve", async (req, res) => {
+router.post("/:id/approve", ["approve"], onlyFields(["revision", "snapshotHash", "notes"]), handle("POST /pipeline/:id/approve", async (req, res) => {
   const { revision, snapshotHash: clientHash, notes } = req.body || {};
   if (!Number.isInteger(revision) || typeof clientHash !== "string") {
     throw invalid("revision (integer) and snapshotHash (string) of the reviewed version are required");
@@ -739,7 +740,7 @@ router.post("/:id/approve", ["approve"], handle("POST /pipeline/:id/approve", as
   res.json({ success: true, pipelineItem: serializeItem(updated) });
 }));
 
-router.post("/:id/reject", ["approve"], handle("POST /pipeline/:id/reject", async (req, res) => {
+router.post("/:id/reject", ["approve"], onlyFields(["notes"]), handle("POST /pipeline/:id/reject", async (req, res) => {
   const notes = req.body?.notes;
   if (notes !== undefined && (typeof notes !== "string" || notes.length > 2000)) throw invalid("notes must be a string");
   const item = await req.prisma.pipelineItem.findUnique({ where: { id: req.params.id } });
@@ -766,7 +767,7 @@ router.post("/:id/reject", ["approve"], handle("POST /pipeline/:id/reject", asyn
 // here: to change the time, edit the item (which clears approval) and
 // re-approve. Calendar planning only; nothing is published. Atomic and
 // idempotent per approved snapshot (unique scheduleKey).
-router.post("/:id/schedule", ["schedule"], handle("POST /pipeline/:id/schedule", async (req, res) => {
+router.post("/:id/schedule", ["schedule"], onlyFields(["scheduledDate", "platform"]), handle("POST /pipeline/:id/schedule", async (req, res) => {
   const { scheduledDate, platform } = req.body || {};
   const prisma = req.prisma;
 
@@ -863,7 +864,7 @@ router.post("/:id/schedule", ["schedule"], handle("POST /pipeline/:id/schedule",
 // the same transaction that moves the item back to review with a new
 // revision. Any downstream job holding the old snapshot then fails its
 // conditional checks (status, approved hash) instead of delivering it.
-router.post("/:id/cancel-schedule", ["schedule"], handle("POST /pipeline/:id/cancel-schedule", async (req, res) => {
+router.post("/:id/cancel-schedule", ["schedule"], onlyFields(["reason"]), handle("POST /pipeline/:id/cancel-schedule", async (req, res) => {
   const reason = req.body?.reason;
   if (typeof reason !== "string" || reason.trim().length < 3 || reason.length > 500) {
     throw invalid("reason is required (3-500 characters)");
@@ -899,7 +900,7 @@ router.post("/:id/cancel-schedule", ["schedule"], handle("POST /pipeline/:id/can
 
 // POST /api/pipeline/:id/rights-hold/clear { note } — the owner reviewed the
 // item after a rights revocation (e.g. regenerated without that reference).
-router.post("/:id/rights-hold/clear", ["admin"], handle("POST /pipeline/:id/rights-hold/clear", async (req, res) => {
+router.post("/:id/rights-hold/clear", ["admin"], onlyFields(["note"]), handle("POST /pipeline/:id/rights-hold/clear", async (req, res) => {
   const note = req.body?.note;
   if (typeof note !== "string" || note.trim().length < 5 || note.length > 1000) throw invalid("note is required: what was reviewed (5-1000 characters)");
   const item = await req.prisma.pipelineItem.findUnique({ where: { id: req.params.id } });

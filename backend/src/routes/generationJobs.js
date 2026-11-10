@@ -1,4 +1,5 @@
 import { secureRouter } from "../lib/secureRouter.js";
+import { onlyFields } from "../lib/requests.js";
 import { ApiError, routeError } from "../lib/errors.js";
 import { listLimit } from "../lib/validate.js";
 import { recoverAbandoned, checkStep, resolveStep } from "../services/generationJobs.js";
@@ -41,15 +42,15 @@ export function generationJobRoutes({ gate, ledger }) {
     res.json(withMoney);
   }));
 
-  router.post("/recover", ["admin"], wrap("POST /generation-jobs/recover", async (req, res) => {
+  router.post("/recover", ["admin"], onlyFields([]), wrap("POST /generation-jobs/recover", async (req, res) => {
     res.json({ recovered: await recoverAbandoned(req.prisma, ledger) });
   }));
 
-  router.post("/steps/:stepId/check", ["admin"], wrap("POST /generation-jobs/steps/:stepId/check", async (req, res) => {
+  router.post("/steps/:stepId/check", ["admin"], onlyFields([]), wrap("POST /generation-jobs/steps/:stepId/check", async (req, res) => {
     res.json(serializeStep(await checkStep(req.prisma, gate, ledger, req.params.stepId, { by: req.principal.id })));
   }));
 
-  router.post("/steps/:stepId/resolve", ["admin"], wrap("POST /generation-jobs/steps/:stepId/resolve", async (req, res) => {
+  router.post("/steps/:stepId/resolve", ["admin"], onlyFields(["resolution", "evidence", "actualCost", "resultUrl", "expectedRevision"]), wrap("POST /generation-jobs/steps/:stepId/resolve", async (req, res) => {
     const b = req.body || {};
     res.json(serializeStep(await resolveStep(req.prisma, ledger, req.params.stepId, {
       resolution: b.resolution, evidence: b.evidence, actualCost: b.actualCost, resultUrl: b.resultUrl, expectedRevision: b.expectedRevision, by: req.principal.id,
