@@ -1,4 +1,5 @@
 import { secureRouter } from "../lib/secureRouter.js";
+import { assertGenerationOpen } from "../services/operations.js";
 import { ApiError, sendError, routeError } from "../lib/errors.js";
 import { validateBody, listLimit, SCHEMAS } from "../lib/validate.js";
 import { readIdempotencyKey, isUniqueViolation } from "../lib/requests.js";
@@ -15,6 +16,7 @@ import { isProcessDeath } from "../services/generationGate.js";
  * persist(result) stores the outcome; the step is marked applied after it.
  */
 async function runAsJob(req, { jobKind, kind, input, keys, targetId }, persist) {
+  await assertGenerationOpen(req.prisma);
   const [check] = req.generationGate.preflightAll([kind]);
   const journal = await createJob(req.prisma, {
     kind: jobKind, targetType: "character", targetId, workflowKey: keys.idempotencyKey, requestHash: keys.requestHash,
@@ -22,7 +24,9 @@ async function runAsJob(req, { jobKind, kind, input, keys, targetId }, persist) 
   });
   let code = null;
   try {
-    const result = await req.generationGate.run(kind, input, { ...keys, hooks: journal.hooks });
+    // The owner's pause also stops a call that already reserved money (released).
+    const hooks = { ...journal.hooks, beforeSubmit: async (i) => { await assertGenerationOpen(req.prisma); await journal.hooks.beforeSubmit(i); } };
+    const result = await req.generationGate.run(kind, input, { ...keys, hooks });
     const out = await persist(result);
     await journal.markApplied(0);
     return out;

@@ -743,3 +743,15 @@ model AssetVersion {
   @@map("asset_versions")
 }
 
+/// Runtime operational switches the owner can change without a redeploy
+/// (e.g. "generation_paused"). Every change records who, when and why.
+model SystemControl {
+  key       String   @id
+  value     Json
+  reason    String?
+  updatedBy String?  @map("updated_by")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("system_controls")
+}
+

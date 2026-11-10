@@ -29,7 +29,7 @@ export function newClient() {
 }
 
 const TABLES = [
-  "metric_observations", "campaign_receipts", "campaign_invoices", "asset_versions", "publish_reconciliations", "publish_deliveries", "publish_jobs", "export_manifests", "reconciliation_records", "generation_steps", "generation_jobs", "script_versions", "rights_records", "character_versions", "audit_events", "sessions", "generation_reservations", "generation_applications", "character_images", "campaign_submissions", "campaigns", "pipeline_items",
+  "metric_observations", "campaign_receipts", "campaign_invoices", "system_controls", "asset_versions", "publish_reconciliations", "publish_deliveries", "publish_jobs", "export_manifests", "reconciliation_records", "generation_steps", "generation_jobs", "script_versions", "rights_records", "character_versions", "audit_events", "sessions", "generation_reservations", "generation_applications", "character_images", "campaign_submissions", "campaigns", "pipeline_items",
   "scripts", "trends", "content", "characters",
 ];
 

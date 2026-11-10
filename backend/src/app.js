@@ -29,6 +29,7 @@ import { createPrismaLedger } from "./services/spendLedger.js";
 import { createMediaStore } from "./services/mediaStore.js";
 import { assemblyCapability, assemble } from "./services/mediaAssembly.js";
 import { configFindings, readiness } from "./services/opsChecks.js";
+import { operationsView, setGenerationPause } from "./services/operations.js";
 import { createPublishingGate } from "./services/publishingGate.js";
 import { defaultPublishers } from "./services/publishers.js";
 import { publishingRoutes } from "./routes/publishing.js";
@@ -78,7 +79,14 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
   app.use((req, res, next) => (req.path.includes("//") ? sendError(res, new ApiError("NOT_FOUND", 404, "Not found")) : next()));
   app.use(helmet());
   app.use(cors(buildCorsOptions(env)));
-  if (logRequests) app.use(morgan(":method :url :status :res[content-length] - :response-time ms id=:res[x-request-id]"));
+  // WHY no query string: a token or other secret pasted into a URL must never
+  // reach the logs; the path and request id are enough to trace a request.
+  morgan.token("safe-url", (req) => {
+    const u = req.originalUrl || req.url || "";
+    const i = u.indexOf("?");
+    return i < 0 ? u : `${u.slice(0, i)}?[query redacted]`;
+  });
+  if (logRequests) app.use(morgan(":method :safe-url :status :res[content-length] - :response-time ms id=:res[x-request-id]"));
   app.use(express.json({ limit: "100kb" }));
 
   // Public, non-sensitive health endpoints.
@@ -143,6 +151,14 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
   // Read-only view of what the spending gate would allow (no secrets).
   // Configuration audit by setting NAME only (admin via the permission table).
   api.get("/system/config-check", allow(["admin"]), (_req, res) => res.json({ findings: configFindings(env) }));
+  // Operations: open obligations and the runtime generation switch (owner).
+  api.get("/system/operations", allow(["admin"]), async (_req, res, next) => {
+    try { res.json(await operationsView(prisma)); } catch (err) { next(err); }
+  });
+  api.post("/system/generation-switch", allow(["admin"]), async (req, res, next) => {
+    try { res.json(await setGenerationPause(prisma, { paused: req.body?.paused, reason: req.body?.reason, by: req.principal?.id })); }
+    catch (err) { if (err instanceof ApiError) return sendError(res, err); next(err); }
+  });
   api.get("/system/generation-policy", allow(["admin"]), (req, res) => res.json(req.generationGate.describe()));
 
   api.use("/auth", authRoutes({ sessions: sessionStore }));

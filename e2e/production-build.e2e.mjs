@@ -53,7 +53,7 @@ try {
   page.on("dialog", (d) => d.accept(d.message().includes("owner API token") ? TOKEN : undefined));
   await page.route("**/*", (route) => (["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort()));
   await page.goto(WEB);
-  for (const name of ["Dashboard", "Characters", "Pipeline", "Generation Jobs", "Content Calendar", "Campaigns", "Measurement"]) {
+  for (const name of ["Dashboard", "Characters", "Pipeline", "Generation Jobs", "Content Calendar", "Campaigns", "Measurement", "Operations"]) {
     await page.getByRole("button", { name }).first().click();
     await page.waitForLoadState("networkidle");
   }

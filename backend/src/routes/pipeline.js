@@ -23,6 +23,7 @@ import { measurePackage } from "../services/shotPlan.js";
 import { resolveLocal, offsetLabel } from "../lib/zonedTime.js";
 import { checkClaims } from "../services/claims.js";
 import { createJob } from "../services/generationJobs.js";
+import { assertGenerationOpen } from "../services/operations.js";
 import { settleJob } from "../services/publishing.js";
 import { isProcessDeath } from "../services/generationGate.js";
 
@@ -329,6 +330,7 @@ router.post("/generate-content", ["generate", "spend"], handle("POST /pipeline/g
   const needsImage = type === "image" || !item.imageUrl;
   const kinds = type === "image" ? ["image"] : needsImage ? ["image", "video"] : ["video"];
   // (1) Blocks before ANY write, reservation or provider call if any stage is not permitted.
+  await assertGenerationOpen(prisma);
   const checks = gate.preflightAll(kinds);
 
   // The pinned version, or (legacy items) the published one, pinned on apply.
@@ -541,7 +543,7 @@ router.post("/generate-content", ["generate", "spend"], handle("POST /pipeline/g
         throw e;
       }
     };
-    await gate.runWorkflow(steps, { hooks: { ...journal.hooks, beforeSubmit: async (i) => { await recheckRights(); await journal.hooks.beforeSubmit(i); } } });
+    await gate.runWorkflow(steps, { hooks: { ...journal.hooks, beforeSubmit: async (i) => { await assertGenerationOpen(prisma); await recheckRights(); await journal.hooks.beforeSubmit(i); } } });
     finished = true;
   } catch (err) {
     // A (simulated) process death leaves everything exactly as it was.

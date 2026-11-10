@@ -158,6 +158,12 @@ export const characterImages = {
   revokeRights: (imageId, reason) => request(`/api/character-images/${imageId}/rights/revoke`, { method: "POST", body: JSON.stringify({ reason }) }),
 };
 
+// ─── Operations (owner) ───────────────────────────────────
+export const system = {
+  operations: () => request("/api/system/operations"),
+  setGenerationPause: (paused, reason) => request("/api/system/generation-switch", { method: "POST", body: JSON.stringify({ paused, reason }) }),
+};
+
 // ─── Measurement (readings with provenance) ───────────────
 export const metrics = {
   subjects: () => request("/api/metrics/subjects"),
