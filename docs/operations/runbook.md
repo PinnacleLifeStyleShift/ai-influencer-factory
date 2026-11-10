@@ -44,6 +44,24 @@ The live API (`277d2d3`) has no authentication. Merging PR #1 deploys automatica
 - **Prefer reverting over Railway's "redeploy previous" button.** Reverting keeps `main` and production in agreement.
 - **Never roll back to `277d2d3` or older.** That image runs `prisma db push` and refuses the migrated schema. Going back that far means restoring the backup (section 3) and redeploying the old commit, an owner decision.
 
+### A migration failed halfway
+
+`[migrate]` stops on a failed migration (Prisma `P3009`), so the new server never starts and the previous deployment keeps serving. To recover (rehearsed in `test/migrations.test.js`):
+
+1. **Undo the partial change:** compare the database with that migration's `migration.sql` and remove what was added (all migrations here are additive, so this means dropping what it added).
+2. **Mark it rolled back:**
+
+   ```bash
+   npx prisma migrate resolve --rolled-back <migration name>
+   ```
+
+   Re-running over a half-applied change is refused, not merged.
+3. **Redeploy:** the migration applies cleanly. If you're unsure, restore the backup instead (section 3).
+
+### Rolling back code
+
+Every migration after the baseline is additive, which is checked by a test. An older secure revision of this series (PR #1 or later) starts against the newest schema: its `migrate deploy` reports "No pending migrations" (also tested). So the secure fallback is to revert to an earlier revision of this series, or restore a backup. It is **never** `277d2d3` (unauthenticated, and it runs `db push`).
+
 ## 3. Restoring a backup into production (owner decision)
 
 1. Run the restore drill first (section 1, step 1) on the backup you intend to use.
@@ -58,6 +76,7 @@ The live API (`277d2d3`) has no authentication. Merging PR #1 deploys automatica
 | Owner token may have leaked | Set a new `OWNER_API_TOKEN` (redeploys). As owner, call `POST /api/auth/sessions/revoke-all`, then sign in again. Review `GET /api/audit-events`. |
 | Unexpected spending | Set `LIVE_PROVIDER_CALLS=disabled` (or unset it). Open **Generation Jobs**: "outcome unknown" steps are counted, not re-bought; check them with the provider and resolve them with evidence. |
 | A post may have gone out twice or not at all | Open the item's **Publishing** panel. "Outcome unknown" deliveries block re-posting until you check the platform or record what you saw. |
+| Something looks wrong with spending | **Operations** page, then **Pause new generation** (with a reason). New submissions stop at once, including a running workflow's next step; reconciliation continues. |
 | Jobs stuck after a crash | Restart, or use **Recover abandoned jobs** (Generation Jobs) and `POST /api/publishing/recover`. Nothing uncertain is retried automatically. |
 | `/ready` returns `not_ready` | The database is unreachable or a migration did not apply. Read the deploy logs (`[migrate]` lines). The previous deployment keeps serving. |
 | A deploy hangs on shutdown | The server waits up to 25 s for in-flight requests, and Railway sends SIGKILL after 30 s. Anything cut off is reconciled by job recovery on the next start. |

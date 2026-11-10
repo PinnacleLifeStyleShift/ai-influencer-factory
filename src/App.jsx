@@ -3,6 +3,7 @@ import * as api from "./api.js";
 import CharacterBible from "./CharacterBible.jsx";
 import GenerationJobs from "./GenerationJobs.jsx";
 import Measurement from "./Measurement.jsx";
+import Operations from "./Operations.jsx";
 import CampaignMoney, { MoneyStates } from "./CampaignMoney.jsx";
 import {
   LayoutDashboard, Users, CalendarDays, Megaphone, Zap,
@@ -837,6 +838,7 @@ const NAV = [
   { id:"calendar", icon:CalendarDays, label:"Content Calendar" },
   { id:"campaigns", icon:Megaphone, label:"Campaigns" },
   { id:"measurement", icon:TrendingUp, label:"Measurement" },
+  { id:"operations", icon:Eye, label:"Operations" },
 ];
 
 export default function App() {
@@ -962,6 +964,7 @@ export default function App() {
               {page==="jobs" && <GenerationJobs />}
               {page==="calendar" && <ContentCalendar content={content} setContent={apiSetContent} characters={characters} />}
               {page==="measurement" && <Measurement />}
+              {page==="operations" && <Operations />}
               {page==="campaigns" && <Campaigns campaigns={campaigns} setCampaigns={apiSetCampaigns} characters={characters} />}
             </>
           )}

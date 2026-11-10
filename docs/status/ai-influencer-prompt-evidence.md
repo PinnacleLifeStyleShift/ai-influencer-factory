@@ -1,0 +1,90 @@
+# Evidence packet: AI Influencer project prompt (10 November 2026)
+
+This is the response to the owner's AI Influencer project prompt and the implementation specification of 10 November. **Base:** PR #9 head `fb53e4c`. **Final:** the head of PR #14 (`pkg-m-operations`; the exact SHA is in the PR).
+
+Statuses are kept separate, as the prompt requires:
+
+- **Code present.**
+- **Locally tested.**
+- **Hosted CI:** green at the exact head.
+- **Deployed:** none. Production still runs `277d2d3`.
+- **Accepted by the intended user:** none yet.
+
+## PRs added for this prompt (stacked, drafts, unmerged)
+
+| PR | Branch | Package | Locally tested | Hosted CI |
+| --- | --- | --- | --- | --- |
+| [#10](https://github.com/PinnacleLifeStyleShift/ai-influencer-factory/pull/10) | `pkg-i-route-authorization` | 1: route-bound authorization (release blocker) | Full suite + 8 browser checks | Green `209a556` |
+| [#11](https://github.com/PinnacleLifeStyleShift/ai-influencer-factory/pull/11) | `pkg-j-reconciliation-cas` | Reconciliation compare-and-swap (publishing defect) | Full suite 188/188 + 8 browser checks | Green `dc0f850` |
+| [#12](https://github.com/PinnacleLifeStyleShift/ai-influencer-factory/pull/12) | `pkg-k-rights-revocation` | 2: revocation holds, pre-submit rights recheck, shot-plan edges | 194/194 (isolated worktree) | Green `90f70fc` |
+| [#13](https://github.com/PinnacleLifeStyleShift/ai-influencer-factory/pull/13) | `pkg-l-media-assembly` | 4: AssetVersion, deterministic assembly | 199/199 + 8 browser checks (isolated) | Green `8036d58`; **5 assembly tests skipped there (no ffmpeg)**; ffmpeg added to CI in #14 |
+| [#14](https://github.com/PinnacleLifeStyleShift/ai-influencer-factory/pull/14) | `pkg-m-operations` | Operations, kill switch, redaction, migration gates | Browser checks 8/8 (isolated); backend fix for 3 unit tests included | Green `aa55c64`: 206/206, 0 skipped |
+| #15 | `pkg-n-strict-contracts` | Unknown-field refusal, export request contract, export integrity, retention policy | See PR | See PR |
+
+## Story and acceptance matrix
+
+| Story / AC | Status | Evidence (tests) |
+| --- | --- | --- |
+| IF01-01 route variants cannot bypass generate/spend/admin | Done (#10) | `auth-route-matrix`: 9 variant types × roles and sessions |
+| IF01-02 denied mutations write nothing, reserve nothing, call no provider | Done (#10) | `auth-route-matrix` row snapshot + provider count |
+| IF02-01/02 reload resolves the pinned version; editing a character doesn't change approved packages | Done (earlier PRs #3/#4) | `db-characters` |
+| IF03-01 expired/unsupported rights block before reservation | Done; **also rechecked right before submission** (#12) | `db-characters` revocation tests |
+| IF03-02 revocation flags unpublished packages without rewriting history | Done (#12) | `db-characters` revocation test |
+| IF04-01/02 a source-free concept has no measured rank; a missing citation stays unsupported | Done (#4) | `db-packages` |
+| IF05-01/02 concurrent saves conflict; a script change clears approval | Done (#4) | `db-packages` |
+| IF06-01/02 durations, duplicates, missing references; reorder changes the digest | Done (#4, edge tests in #12) | `shot-plan-edges`, `db-packages` |
+| IF07-01/02 caps across processes; same key/different payload conflicts; expired rights stop before reserving | Done (#5, #12) | `db-jobs`, `db-generation-races`, `db-characters` |
+| IF08-01/02 a crash at each boundary never re-buys; a stale worker can't overwrite | Done (#5) | `db-jobs` |
+| IF09-01 the approved hash binds rendered assets and presentation fields | Done (#6, rendered file in #13) | `db-review-export`, `db-assembly` |
+| IF09-02 playback duration independently measured | Done: ffmpeg full decode plus container measurement (#13). **Browser playback not tested** (Chromium has no H.264) | `db-assembly` |
+| IF10-01/02 DST gaps/folds need a choice; a passed time never means published | Done (#6) | `zoned-time`, `db-review-export` |
+| IF11-01/02 stale approval or missing media blocks ready; repeat export gives identical hashes | Done (#6, #13) | `db-review-export`, `db-assembly` |
+| IF12-01 parallel resolutions give one decision | Done (#11) | `db-reconciliation-race` (two PostgreSQL connections) |
+| IF12-02 no sensitive payload or bootstrap token in logs or operations views | Done (#14); a query-string leak found and fixed | `db-operations` secret markers |
+| IF13-01 an unavailable provider doesn't fall back | Done (gate, earlier) | `generation-gate` |
+| IF13-02 expired storage links and quota failures keep accurate state | **Partial:** missing, oversized or replaced media keep accurate state, and exports re-verify their files (#15). No signed links exist (storage not approved) | `db-assembly`, `db-review-export`, `db-contracts` |
+| Package 1: reject unknown security-sensitive fields | Done (#15) | `db-contracts` |
+| Package 4: export with expected revision, approval and state | Done (#15): `expectedRevision` + `approvedHash`, `exportId`, `state` (synchronous: ready or an error) | `db-contracts` |
+| Operations: retention defined per category; provenance deletion never looks complete | Done as a typed owner decision: unset means nothing is deleted. Export verification reports deleted or replaced files (#15) | `db-contracts` |
+| IF14-01 opposing resolutions race: one commits, no duplicate audit | Done (#11) | `db-reconciliation-race` |
+| IF14-02 mixed-case/trailing-slash publishing endpoints enforce the same permission | Done (#10) | `auth-route-matrix` |
+| IF15-01 an absent analytics adapter leaves metrics unknown | Done (#8) | `db-measurement` |
+| IF15-02 route variants can't let an editor approve sponsorship | Done (#10; sponsor gate in #9) | `auth-route-matrix`, `db-ops` |
+
+## Real versus mock capability matrix
+
+| Capability | State |
+| --- | --- |
+| Authentication | Owner-token bootstrap → server sessions; owner role only (login provider: owner decision) |
+| Paid image/video generation | Interface + mocks; **off** (`LIVE_PROVIDER_CALLS`; prices, caps, provider and model are owner decisions) |
+| Provider status lookup | Mock only; no real adapter declares it |
+| Media storage | Synthetic local fixture store only; real storage not approved |
+| Local assembly | Real ffmpeg where installed and enabled; **unavailable on the production images** (no ffmpeg) |
+| Publishing | Interfaces + simulation; no real publisher |
+| Platform analytics | Interface only; no provider |
+| Campaign money | Real records (planned, invoiced, received), entered by the owner |
+| Backups and restore drill | Scripts tested against PostgreSQL 16; never run against production |
+
+## Migration and restore evidence (TESTED LOCALLY)
+
+- **Migrations:** 16 committed, all additive except the one documented data change (static test).
+- **Rehearsed cases:** a fresh database, a populated 277d2d3 baseline, the full stacked sequence, repeated invocation, deliberate drift, **a partially applied migration with recovery**, and **an older secure revision against the newest schema**.
+- **Restore:** a backup → restore drill with row-count and migration verification, including refusals (the production target, a non-empty target, a tampered dump, missing rows).
+
+## Captures (synthetic data)
+
+Desktop and phone captures are in `docs/screenshots/`. New in this round: `pkg-m-operations.png`. The review/export screen has both a desktop and a 390 px phone capture.
+
+**Paper handoff not done:** there was no access to the Paper artboards, so screens were built from the text contracts.
+
+## Not run / remaining holds
+
+- **Not run:** anything against production or live providers; browser video playback (Chromium has no H.264); signed-link expiry (no signed links exist).
+- **Release holds (owner actions):**
+  1. **Railway prep before merging:** backup and restore drill, preflight, `OWNER_API_TOKEN`, `FRONTEND_URL`, `TRUST_PROXY`.
+  2. **Merge order:** PRs #1–#14 in one sitting, because the authorization fix (#10) is on top of the stack. Alternatively, ask for it to be backported into #2.
+  3. **Private media storage:** approval and its retention policy.
+  4. **ffmpeg in production:** whether the API image should include it.
+  5. **Paid generation:** provider/model approval, prices, caps.
+  6. **Login provider, publishing accounts, analytics access.**
+- **Next safe action:** the owner completes runbook section 1 (backup, drill, preflight, variables). Then merging #1–#14 in order deploys the authenticated build, with everything paid or outbound still off.

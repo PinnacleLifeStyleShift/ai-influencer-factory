@@ -25,6 +25,8 @@ export function approvalIsCurrent(item) {
 
 /** What will actually be distributed: the shot clips, else the video, else the still. */
 export function mediaPlan(item) {
+  // A rendered package is distributed as its one rendered file.
+  if (item.renderedAssetId && item.videoUrl) return [{ role: "video", kind: "video", url: item.videoUrl, reservationId: null }];
   const shots = Array.isArray(item.shotMedia) ? item.shotMedia : [];
   if (shots.length) {
     return [...shots].sort((a, b) => a.shotIndex - b.shotIndex)
@@ -78,6 +80,7 @@ export async function buildExport(prisma, mediaStore, item) {
     : [];
   const byId = new Map(reservations.map((r) => [r.id, r]));
 
+  const rendered = item.renderedAssetId ? await prisma.assetVersion.findUnique({ where: { id: item.renderedAssetId } }) : null;
   const referencesSent = new Set();
   const files = media.map((m) => {
     const app = applications.filter((a) => a.mediaUrl === m.url || a.reservationId === m.reservationId).at(-1);
@@ -90,6 +93,7 @@ export async function buildExport(prisma, mediaStore, item) {
       width: m.info.width, height: m.info.height, durationSec: m.info.durationSec,
       provider: r ? `${r.provider}:${r.model}` : null,
       inputs: app ? { characterVersionId: app.characterVersionId, conditioning: app.conditioning, referencesSent: app.referencesSent } : null,
+      ...(rendered && rendered.storageRef === m.url ? { assembledFrom: rendered.provenance.shots, assembly: { tool: rendered.provenance.tool, settings: rendered.provenance.settings, decodeCheck: rendered.provenance.decodeCheck } } : {}),
       cost: r
         ? { currency: r.currency, actualMicros: settledActual, status: settledActual !== null ? "actual" : r.state === "settled" ? "settled_at_estimate" : r.state, priceVersion: r.priceVersion }
         : { status: "no_paid_generation_recorded" },
