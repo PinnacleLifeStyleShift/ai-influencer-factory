@@ -90,8 +90,10 @@ export function fakePrisma(seed = {}) {
   };
   const auditRows = [];
   const auditEvent = { create: async ({ data }) => { auditRows.push(data); return data; } };
+  // Runtime switches (generation pause): none set in the fake database.
+  const systemControl = { findUnique: async () => null, upsert: async ({ create }) => create };
   return {
-    db, calls, session, sessionRows: sessions, auditEvent, auditRows, generationJob, generationStep,
+    db, calls, session, sessionRows: sessions, auditEvent, auditRows, generationJob, generationStep, systemControl,
     character: model("character"),
     content: model("content"),
     pipelineItem: model("pipelineItem"),

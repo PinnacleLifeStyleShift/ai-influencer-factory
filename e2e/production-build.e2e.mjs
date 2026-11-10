@@ -60,6 +60,9 @@ try {
   // The app really talked to its API under the policy.
   await page.getByRole("button", { name: "Characters" }).first().click();
   await page.waitForLoadState("networkidle");
+  await page.getByRole("button", { name: "Operations" }).first().click();
+  await page.getByLabel("Generation switch").waitFor();
+  await page.screenshot({ path: path.join(root, "docs/screenshots/pkg-m-operations.png") });
   assert.deepEqual(violations, [], "no Content-Security-Policy violations");
   assert.deepEqual(errors, [], "no page errors");
   console.log("Production build e2e passed (served with security headers; every page opened with no CSP violation or page error)");
