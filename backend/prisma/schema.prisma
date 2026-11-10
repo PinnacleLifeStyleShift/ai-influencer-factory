@@ -114,6 +114,13 @@ model Content {
   scheduleKey     String?  @unique @map("schedule_key")
   approvedHash    String?  @map("approved_hash")
   mediaType       String?  @map("media_type") // image | video
+  // Planning only: the approved destination instant and zone, and
+  // cancellation (a cancelled entry can never be delivered).
+  scheduledAt      DateTime? @map("scheduled_at")
+  scheduleTimezone String?   @map("schedule_timezone")
+  cancelledAt      DateTime? @map("cancelled_at")
+  cancelledBy      String?   @map("cancelled_by")
+  cancelReason     String?   @map("cancel_reason")
   imageUrl        String?  @map("image_url")
   videoUrl        String?  @map("video_url")
 
@@ -140,6 +147,19 @@ model Campaign {
   payoutAmount    String?  @map("payout_amount")
   deadline        String?
   status          String   @default("active")
+  // Currency of the planned payout (Package G). Planned, invoiced and received
+  // money are separate records; nothing here is "earned" by itself.
+  currency        String   @default("USD")
+  // A real, authorized sponsor relationship (brief section 3): agreement
+  // reference, who the sponsor is, when it was authorized and the paid-
+  // promotion disclosure. Required before characters are submitted.
+  sponsorLegalName    String?   @map("sponsor_legal_name")
+  sponsorAgreementRef String?   @map("sponsor_agreement_ref")
+  sponsorAuthorizedAt DateTime? @map("sponsor_authorized_at")
+  sponsorAuthorizedBy String?   @map("sponsor_authorized_by")
+  sponsorDisclosure   String?   @map("sponsor_disclosure")
+  invoices        CampaignInvoice[]
+  receipts        CampaignReceipt[]
 
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
@@ -177,9 +197,17 @@ model Trend {
   topic         String
   description   String?
   hashtags      String[] @default([])
-  trendScore    Float    @default(0) @map("trend_score")
+  // Null = unknown. Only real, sourced data may ever fill this in.
+  trendScore    Float?   @map("trend_score")
   source        String?  // URL or reference
   provenance    String   @default("unknown") // simulated_fixture | manual | verified_source
+  // manual_idea | observation | simulated_fixture
+  kind          String   @default("simulated_fixture")
+  // Observations only: where and when it was seen, and exactly what was seen.
+  sourceUrl     String?  @map("source_url")
+  observedAt    DateTime? @map("observed_at")
+  observation   String?
+  recordedBy    String?  @map("recorded_by")
   status        String   @default("new") // new, scripted, used, expired
 
   scripts       Script[]
@@ -202,6 +230,8 @@ model Script {
   duration      String?  // "15s", "30s", "60s"
   tone          String?  // funny, educational, dramatic, etc.
   status        String   @default("draft") // draft, approved, in_production, completed
+  // Latest ScriptVersion number; the fields above mirror that version.
+  currentVersion Int     @default(0) @map("current_version")
 
   trendId       String?  @map("trend_id")
   trend         Trend?   @relation(fields: [trendId], references: [id])
@@ -210,6 +240,7 @@ model Script {
   character     Character? @relation(fields: [characterId], references: [id])
 
   pipelineItems PipelineItem[]
+  versions      ScriptVersion[]
 
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
@@ -239,6 +270,20 @@ model PipelineItem {
 
   scheduledDate String?   @map("scheduled_date")
   platform      String?
+  // Destination schedule (part of the approved snapshot, Package E): the IANA
+  // zone of the destination, the wall time there, and the resolved instant.
+  scheduledAt      DateTime? @map("scheduled_at")
+  scheduleTimezone String?   @map("schedule_timezone")
+  scheduleLocal    String?   @map("schedule_local")
+  // Extra destinations for the same original (cross-post), part of the
+  // approved snapshot. One original posted to several places is one job.
+  crossPostDestinations String[] @default([]) @map("cross_post_destinations")
+  // Set when rights of a reference this item pinned or sent are revoked:
+  // approval, scheduling, export and publishing stop until the owner reviews.
+  rightsHoldAt     DateTime? @map("rights_hold_at")
+  rightsHoldReason String?   @map("rights_hold_reason")
+  // The rendered asset (AssetVersion) the current videoUrl came from, if any.
+  renderedAssetId  String?   @map("rendered_asset_id")
 
   reviewNotes   String?   @map("review_notes")
   approvedAt    DateTime? @map("approved_at")
@@ -257,6 +302,12 @@ model PipelineItem {
   // applied only by the holder of this exact token at the expected revision.
   // Character version this item was written for; part of the approved snapshot.
   characterVersionId  String?   @map("character_version_id")
+  // Content package (all part of the approved snapshot):
+  scriptVersionId String?  @map("script_version_id")
+  // [{ shotIndex, shotKey, kind, url, durationSec, durationSource, reservationId }]
+  shotMedia       Json     @default("[]") @map("shot_media")
+  disclosure      String?
+  exportSettings  Json?    @map("export_settings")
   generationClaim     String?   @map("generation_claim")
   generationClaimedAt DateTime? @map("generation_claimed_at")
 
@@ -281,6 +332,10 @@ model GenerationReservation {
   idempotencyKey String?  @unique @map("idempotency_key")
   requestHash    String?  @map("request_hash")
   result         Json?
+  // Pricing context at reservation time (required since Package D).
+  currency       String   @default("USD")
+  priceVersion   String?  @map("price_version")
+  capTimezone    String?  @map("cap_timezone")
 
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
@@ -401,7 +456,302 @@ model RightsRecord {
   recordedAt          DateTime  @default(now()) @map("recorded_at")
   approvedBy          String?   @map("approved_by")
   approvedAt          DateTime? @map("approved_at")
+  // A revocation is a new record (history is never rewritten): no permitted
+  // uses, the owner's reason and time.
+  revokedAt           DateTime? @map("revoked_at")
+  revokeReason        String?   @map("revoke_reason")
 
   @@index([imageId, recordedAt])
   @@map("rights_records")
 }
+
+// ─── SCRIPT VERSIONS ─────────────────────────────────────────
+// Immutable script versions with their shot plan. Editing a script creates
+// a new version; content pins one, so an edit never silently changes
+// approved content.
+
+model ScriptVersion {
+  id                 String   @id @default(cuid())
+  scriptId           String   @map("script_id")
+  script             Script   @relation(fields: [scriptId], references: [id], onDelete: Cascade)
+  version            Int
+  hook               String?
+  body               String?
+  callToAction       String?  @map("call_to_action")
+  speakingPaceWpm    Int      @map("speaking_pace_wpm")
+  targetDurationSec  Int      @map("target_duration_sec")
+  // [{ claim, sourceUrl?, observedAt?, basis: "source" | "fictional" }]
+  evidence           Json     @default("[]")
+  shotPlan           Json     @map("shot_plan")
+  plannedDurationSec Float    @map("planned_duration_sec")
+  characterVersionId String?  @map("character_version_id")
+  contentHash        String   @map("content_hash")
+  createdBy          String?  @map("created_by")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  @@unique([scriptId, version])
+  @@map("script_versions")
+}
+
+// ─── GENERATION JOBS ─────────────────────────────────────────
+// Durable record of every paid workflow and each step's progress, so a
+// restart can tell "never sent" (safe to release) from "may have been sent"
+// (must be reconciled before anything is bought again).
+
+model GenerationJob {
+  id             String    @id @default(cuid())
+  kind           String    // pipeline.generate-content | character.generate-image | character.generate-video
+  targetType     String    @map("target_type")
+  targetId       String    @map("target_id")
+  workflowKey    String    @map("workflow_key")
+  requestHash    String?   @map("request_hash")
+  // queued | running | awaiting_reconciliation | awaiting_application | succeeded | failed | cancelled
+  state          String    @default("queued")
+  leaseOwner     String?   @map("lease_owner")
+  leaseExpiresAt DateTime? @map("lease_expires_at")
+  errorCode      String?   @map("error_code")
+  createdBy      String?   @map("created_by")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  finishedAt     DateTime? @map("finished_at")
+  steps          GenerationStep[]
+
+  @@index([state])
+  @@index([targetId])
+  @@map("generation_jobs")
+}
+
+model GenerationStep {
+  id                   String   @id @default(cuid())
+  jobId                String   @map("job_id")
+  job                  GenerationJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  index                Int
+  kind                 String   // image | video
+  provider             String
+  model                String
+  idempotencyKey       String   @map("idempotency_key")
+  reservationId        String?  @map("reservation_id")
+  // pending | reserved | submitting | accepted | succeeded | applied | not_submitted |
+  // outcome_unknown | settlement_failed | application_failed | superseded |
+  // resolved_not_charged | resolved_charged_no_result | resolved_charged_with_result | replayed
+  state                String   @default("pending")
+  providerRequestId    String?  @map("provider_request_id")
+  vendorIdempotencyKey String?  @map("vendor_idempotency_key")
+  result               Json?
+  errorCode            String?  @map("error_code")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+  // Bumped on every change; reconciliation decisions compare-and-swap on it.
+  revision        Int      @default(0)
+  reconciliations      ReconciliationRecord[]
+
+  @@unique([jobId, index])
+  @@index([state])
+  @@map("generation_steps")
+}
+
+// Who resolved an uncertain step, how, and on what evidence. Append-only.
+model ReconciliationRecord {
+  id            String   @id @default(cuid())
+  stepId        String   @map("step_id")
+  step          GenerationStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  reservationId String?  @map("reservation_id")
+  method        String   // provider_check | operator
+  resolution    String   // not_charged | charged_no_result | charged_with_result | still_pending
+  evidence      String
+  actualMicros  BigInt?  @map("actual_micros")
+  resultUrl     String?  @map("result_url")
+  resolvedBy    String   @map("resolved_by")
+  resolvedAt    DateTime @default(now()) @map("resolved_at")
+
+  @@index([stepId])
+  @@map("reconciliation_records")
+}
+
+/// An export of one approved snapshot. The manifest is canonical JSON; the
+/// same approved content always produces the same manifest hash.
+model ExportManifest {
+  id             String   @id @default(cuid())
+  pipelineItemId String   @map("pipeline_item_id")
+  revision       Int
+  snapshotHash   String   @map("snapshot_hash")
+  manifestHash   String   @map("manifest_hash")
+  manifest       Json
+  createdBy      String?  @map("created_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@unique([pipelineItemId, manifestHash])
+  @@index([pipelineItemId])
+  @@map("export_manifests")
+}
+
+/// One publication of one original (a calendar entry from an approval) to its
+/// approved destinations. Deliveries hold the per-destination truth.
+model PublishJob {
+  id             String   @id @default(cuid())
+  contentId      String   @unique @map("content_id")
+  pipelineItemId String   @map("pipeline_item_id")
+  snapshotHash   String   @map("snapshot_hash")
+  manifestHash   String   @map("manifest_hash")
+  // queued | running | awaiting_reconciliation | awaiting_confirmation |
+  // published | partially_published | simulated | failed | cancelled
+  state          String   @default("queued")
+  leaseOwner     String?  @map("lease_owner")
+  leaseExpiresAt DateTime? @map("lease_expires_at")
+  createdBy      String?  @map("created_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+  deliveries     PublishDelivery[]
+
+  @@map("publish_jobs")
+}
+
+model PublishDelivery {
+  id              String   @id @default(cuid())
+  jobId           String   @map("job_id")
+  job             PublishJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  platform        String
+  accountRef      String?  @map("account_ref")
+  // pending | submitting | processing | published | simulated | failed |
+  // outcome_unknown | cancelled | resolved_published | resolved_not_published
+  state           String   @default("pending")
+  attempt         Int      @default(0)
+  // Stable per attempt; sent as the platform's idempotency key where supported.
+  clientRef       String?  @map("client_ref")
+  remoteRequestId String?  @map("remote_request_id")
+  remotePostId    String?  @map("remote_post_id")
+  permalink       String?
+  errorCode       String?  @map("error_code")
+  simulated       Boolean  @default(false)
+  submittedAt     DateTime? @map("submitted_at")
+  confirmedAt     DateTime? @map("confirmed_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  // Bumped on every change; reconciliation decisions compare-and-swap on it.
+  revision        Int      @default(0)
+  reconciliations PublishReconciliation[]
+
+  @@unique([jobId, platform])
+  @@map("publish_deliveries")
+}
+
+model PublishReconciliation {
+  id           String   @id @default(cuid())
+  deliveryId   String   @map("delivery_id")
+  delivery     PublishDelivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  method       String   // platform_check | operator
+  resolution   String   // published | not_published | still_pending
+  evidence     String
+  remotePostId String?  @map("remote_post_id")
+  permalink    String?
+  resolvedBy   String   @map("resolved_by")
+  resolvedAt   DateTime @default(now()) @map("resolved_at")
+
+  @@index([deliveryId])
+  @@map("publish_reconciliations")
+}
+
+/// One reading of one metric, from one source. Append-only: a wrong reading is
+/// retracted (with a reason), never edited. Cumulative readings are "as of"
+/// observedAt; period readings cover [periodStart, periodEnd).
+model MetricObservation {
+  id            String    @id @default(cuid())
+  subjectType   String    @map("subject_type") // post | account
+  subjectId     String    @map("subject_id")   // publish delivery id | character id
+  platform      String
+  metric        String
+  kind          String    // cumulative | period
+  value         BigInt
+  observedAt    DateTime  @map("observed_at")
+  periodStart   DateTime? @map("period_start")
+  periodEnd     DateTime? @map("period_end")
+  source        String    // manual | api | fixture
+  sourceDetail  String?   @map("source_detail")
+  dedupeKey     String    @unique @map("dedupe_key")
+  recordedBy    String    @map("recorded_by")
+  recordedAt    DateTime  @default(now()) @map("recorded_at")
+  retractedAt   DateTime? @map("retracted_at")
+  retractReason String?   @map("retract_reason")
+
+  @@index([subjectType, subjectId, metric])
+  @@index([observedAt])
+  @@map("metric_observations")
+}
+
+/// An invoice actually issued to a sponsor. Voided, never deleted.
+model CampaignInvoice {
+  id           String    @id @default(cuid())
+  campaignId   String    @map("campaign_id")
+  campaign     Campaign  @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  number       String
+  amountMicros BigInt    @map("amount_micros")
+  currency     String
+  issuedAt     DateTime  @map("issued_at")
+  dueAt        DateTime? @map("due_at")
+  voidedAt     DateTime? @map("voided_at")
+  voidReason   String?   @map("void_reason")
+  recordedBy   String    @map("recorded_by")
+  recordedAt   DateTime  @default(now()) @map("recorded_at")
+  receipts     CampaignReceipt[]
+
+  @@unique([campaignId, number])
+  @@map("campaign_invoices")
+}
+
+/// Cash actually received, with evidence. Reversed, never deleted.
+model CampaignReceipt {
+  id            String    @id @default(cuid())
+  campaignId    String    @map("campaign_id")
+  campaign      Campaign  @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  invoiceId     String?   @map("invoice_id")
+  invoice       CampaignInvoice? @relation(fields: [invoiceId], references: [id])
+  amountMicros  BigInt    @map("amount_micros")
+  currency      String
+  receivedAt    DateTime  @map("received_at")
+  reference     String
+  evidence      String
+  reversedAt    DateTime? @map("reversed_at")
+  reverseReason String?   @map("reverse_reason")
+  recordedBy    String    @map("recorded_by")
+  recordedAt    DateTime  @default(now()) @map("recorded_at")
+
+  @@map("campaign_receipts")
+}
+
+/// A media file as it actually is (measured from its bytes), with where it
+/// came from. Rendered packages are stored here; the item's videoUrl then
+/// points at it, so approval binds the rendered file's hash.
+model AssetVersion {
+  id             String   @id @default(cuid())
+  pipelineItemId String   @map("pipeline_item_id")
+  kind           String   // rendered
+  contentHash    String   @map("content_hash")
+  mime           String
+  bytes          Int
+  width          Int?
+  height         Int?
+  codec          String?
+  durationSec    Float?   @map("duration_sec")
+  storageRef     String   @map("storage_ref")
+  sourceJobId    String?  @map("source_job_id")
+  // Inputs (shot keys, clip hashes, trims), tool and version, decode check.
+  provenance     Json
+  createdBy      String?  @map("created_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@unique([pipelineItemId, contentHash])
+  @@index([pipelineItemId])
+  @@map("asset_versions")
+}
+
+/// Runtime operational switches the owner can change without a redeploy
+/// (e.g. "generation_paused"). Every change records who, when and why.
+model SystemControl {
+  key       String   @id
+  value     Json
+  reason    String?
+  updatedBy String?  @map("updated_by")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("system_controls")
+}
+

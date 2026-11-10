@@ -1,4 +1,5 @@
-import { Router } from "express";
+import { secureRouter } from "../lib/secureRouter.js";
+import { assertGenerationOpen } from "../services/operations.js";
 import { ApiError, sendError, routeError } from "../lib/errors.js";
 import { validateBody, listLimit, SCHEMAS } from "../lib/validate.js";
 import { readIdempotencyKey, isUniqueViolation } from "../lib/requests.js";
@@ -7,6 +8,41 @@ import {
   publishVersion, restoreDraft, snapshotOf, contentHashOf, fingerprintUrl, promptHash,
 } from "../services/characterVersions.js";
 import { clearanceFor, latestRights, missingForUse } from "../services/rights.js";
+import { createJob } from "../services/generationJobs.js";
+import { isProcessDeath } from "../services/generationGate.js";
+
+/**
+ * Runs a single paid step as a durable job (see services/generationJobs.js).
+ * persist(result) stores the outcome; the step is marked applied after it.
+ */
+async function runAsJob(req, { jobKind, kind, input, keys, targetId }, persist) {
+  await assertGenerationOpen(req.prisma);
+  const [check] = req.generationGate.preflightAll([kind]);
+  const journal = await createJob(req.prisma, {
+    kind: jobKind, targetType: "character", targetId, workflowKey: keys.idempotencyKey, requestHash: keys.requestHash,
+    steps: [{ kind, provider: check.provider, model: check.model, idempotencyKey: keys.idempotencyKey }], by: req.principal?.id,
+  });
+  let code = null;
+  try {
+    // The owner's pause also stops a call that already reserved money (released).
+    const hooks = { ...journal.hooks, beforeSubmit: async (i) => { await assertGenerationOpen(req.prisma); await journal.hooks.beforeSubmit(i); } };
+    const result = await req.generationGate.run(kind, input, { ...keys, hooks });
+    const out = await persist(result);
+    await journal.markApplied(0);
+    return out;
+  } catch (err) {
+    if (isProcessDeath(err)) throw err;
+    code = err instanceof ApiError ? err.code : "INTERNAL_ERROR";
+    // Only a paid, stored result that could not be persisted is an application failure.
+    const step = await req.prisma.generationStep.findFirst({ where: { jobId: journal.jobId, index: 0 } }).catch(() => null);
+    if (step && ["succeeded", "replayed"].includes(step.state)) {
+      await journal.hooks.onStepState(0, "application_failed", code).catch(() => {});
+    }
+    throw err;
+  } finally {
+    await journal.finish(code).catch(() => {});
+  }
+}
 
 /** A reference image URL may be sent to providers later, so unsafe ones are refused on input. */
 function assertSafeReference(body) {
@@ -17,9 +53,8 @@ function assertSafeReference(body) {
 }
 import { requestHash } from "../services/spendLedger.js";
 import { buildPromptFromCharacter } from "../services/imageGeneration.js";
-import { generateVideo } from "../services/videoGeneration.js";
 
-const router = Router();
+const router = secureRouter();
 
 // Arbitrary constant for a transaction-scoped advisory lock that serialises
 // character-ID allocation across concurrent requests and processes.
@@ -101,7 +136,7 @@ router.get("/:id", async (req, res) => {
 });
 
 // POST /api/characters — create
-router.post("/", async (req, res) => {
+router.post("/", ["edit"], async (req, res) => {
   try {
     validateBody(req.body, SCHEMAS.character);
     assertSafeReference(req.body);
@@ -147,7 +182,7 @@ router.post("/", async (req, res) => {
 });
 
 // PUT /api/characters/:id — update
-router.put("/:id", async (req, res) => {
+router.put("/:id", ["edit"], async (req, res) => {
   try {
     validateBody(req.body, SCHEMAS.character, { partial: true });
     assertSafeReference(req.body);
@@ -202,7 +237,7 @@ router.put("/:id", async (req, res) => {
 });
 
 // DELETE /api/characters/:id
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", ["edit"], async (req, res) => {
   try {
     await req.prisma.character.delete({ where: { id: req.params.id } });
     res.json({ success: true });
@@ -217,7 +252,7 @@ router.delete("/:id", async (req, res) => {
  * reference image is never changed here; promote a candidate explicitly with
  * POST /api/characters/:id/reference-image.
  */
-router.post("/:id/generate-image", async (req, res) => {
+router.post("/:id/generate-image", ["generate", "spend"], async (req, res) => {
   try {
     const character = await req.prisma.character.findUnique({ where: { id: req.params.id } });
     if (!character) throw notFound();
@@ -225,61 +260,61 @@ router.post("/:id/generate-image", async (req, res) => {
     // Candidates preview the editable draft. No reference is sent: the
     // selected image adapter declares no reference conditioning.
     const prompt = buildPromptFromCharacter(character);
-    const result = await req.generationGate.run(
-      "image",
-      { prompt, options: { aspectRatio: character.aspectRatio, quality: character.qualitySetting } },
-      generationKeys(req, character, "image")
-    );
-    const draft = snapshotOf(character);
-    const draftHash = contentHashOf({ ...draft, references: [] });
-    const published = character.publishedVersionId
-      ? await req.prisma.characterVersion.findUnique({ where: { id: character.publishedVersionId } })
-      : null;
-    const generationInputs = {
-      basedOn: "draft",
-      draftHash,
-      promptHash: promptHash(prompt),
-      referencesSent: [],
-      conditioning: "none",
-    };
+    const keys = generationKeys(req, character, "image");
+    const { candidate, result } = await runAsJob(req, {
+      jobKind: "character.generate-image", kind: "image", targetId: character.id, keys,
+      input: { prompt, options: { aspectRatio: character.aspectRatio, quality: character.qualitySetting } },
+    }, async (result) => {
+      const draft = snapshotOf(character);
+      const draftHash = contentHashOf({ ...draft, references: [] });
+      const published = character.publishedVersionId
+        ? await req.prisma.characterVersion.findUnique({ where: { id: character.publishedVersionId } })
+        : null;
+      const generationInputs = {
+        basedOn: "draft",
+        draftHash,
+        promptHash: promptHash(prompt),
+        referencesSent: [],
+        conditioning: "none",
+      };
 
-    // WHY: provider output is stored and may be forwarded later; refuse unsafe URLs.
-    if (!checkExternalUrl(result.imageUrl).ok) {
-      throw new ApiError("UNSAFE_MEDIA_URL", 502, "The provider returned a media URL that is not a public https URL; it was not stored",
-        { reservationId: result.reservationId });
-    }
-    // Store the candidate and advance the counter together. A replayed result
-    // (same request retried) whose candidate is already stored is returned as is.
-    const index = character.imageGenerations + 1;
-    const candidate = await req.prisma.$transaction(async (tx) => {
-      if (result.reservationId) {
-        const existing = await tx.characterImage.findFirst({ where: { reservationId: result.reservationId } });
-        if (existing) return existing;
+      // WHY: provider output is stored and may be forwarded later; refuse unsafe URLs.
+      if (!checkExternalUrl(result.imageUrl).ok) {
+        throw new ApiError("UNSAFE_MEDIA_URL", 502, "The provider returned a media URL that is not a public https URL; it was not stored",
+          { reservationId: result.reservationId });
       }
-      const { count } = await tx.character.updateMany({
-        where: { id: character.id, imageGenerations: character.imageGenerations },
-        data: { imageGenerations: { increment: 1 } },
-      });
-      if (count !== 1) throw new ApiError("REVISION_CONFLICT", 409, "Character changed during generation; reload and retry");
-      return tx.characterImage.create({
-        data: {
-          characterId: character.id,
-          imageUrl: result.imageUrl,
-          status: "candidate",
-          source: "generated",
-          provider: result.provider,
-          model: result.model,
-          reservationId: result.reservationId || null,
-          generationIndex: index,
-          fingerprint: fingerprintUrl(result.imageUrl),
-          // Linked to the published version only when the draft equals it.
-          characterVersionId: published && contentHashOf({ ...draft, references: [] }) ===
-            contentHashOf({ identity: published.identity, styling: published.styling, references: [] }) ? published.id : null,
-          generationInputs,
-        },
-      });
+      // Store the candidate and advance the counter together. A replayed result
+      // (same request retried) whose candidate is already stored is returned as is.
+      const index = character.imageGenerations + 1;
+      return req.prisma.$transaction(async (tx) => {
+        if (result.reservationId) {
+          const existing = await tx.characterImage.findFirst({ where: { reservationId: result.reservationId } });
+          if (existing) return existing;
+        }
+        const { count } = await tx.character.updateMany({
+          where: { id: character.id, imageGenerations: character.imageGenerations },
+          data: { imageGenerations: { increment: 1 } },
+        });
+        if (count !== 1) throw new ApiError("REVISION_CONFLICT", 409, "Character changed during generation; reload and retry");
+        return tx.characterImage.create({
+          data: {
+            characterId: character.id,
+            imageUrl: result.imageUrl,
+            status: "candidate",
+            source: "generated",
+            provider: result.provider,
+            model: result.model,
+            reservationId: result.reservationId || null,
+            generationIndex: index,
+            fingerprint: fingerprintUrl(result.imageUrl),
+            // Linked to the published version only when the draft equals it.
+            characterVersionId: published && contentHashOf({ ...draft, references: [] }) ===
+              contentHashOf({ identity: published.identity, styling: published.styling, references: [] }) ? published.id : null,
+            generationInputs,
+          },
+        });
+      }).then((candidate) => ({ candidate, result }));
     });
-
     const current = await req.prisma.character.findUnique({ where: { id: character.id } });
     res.status(201).json({ candidate, character: current, replayed: result.replayed === true });
   } catch (err) {
@@ -316,7 +351,7 @@ router.get("/:id/images", async (req, res) => {
  * existing reference requires replaceReference: true; the previous reference
  * is kept in history as "replaced_reference", never lost.
  */
-router.post("/:id/reference-image", async (req, res) => {
+router.post("/:id/reference-image", ["references"], async (req, res) => {
   try {
     const { imageId, replaceReference } = req.body || {};
     if (!imageId || typeof imageId !== "string") {
@@ -364,7 +399,7 @@ router.post("/:id/reference-image", async (req, res) => {
 });
 
 // POST /api/characters/:id/images { imageUrl } — register an existing image as a candidate
-router.post("/:id/images", async (req, res) => {
+router.post("/:id/images", ["references"], async (req, res) => {
   try {
     const character = await req.prisma.character.findUnique({ where: { id: req.params.id } });
     if (!character) throw notFound();
@@ -414,7 +449,7 @@ router.get("/:id/versions/:version", async (req, res) => {
 });
 
 // POST /api/characters/:id/versions { note? } — publish the current draft (immutable)
-router.post("/:id/versions", async (req, res) => {
+router.post("/:id/versions", ["edit"], async (req, res) => {
   try {
     const note = req.body?.note;
     if (note !== undefined && (typeof note !== "string" || note.length > 500)) {
@@ -428,7 +463,7 @@ router.post("/:id/versions", async (req, res) => {
 });
 
 // POST /api/characters/:id/versions/:version/restore — copy a version into the draft
-router.post("/:id/versions/:version/restore", async (req, res) => {
+router.post("/:id/versions/:version/restore", ["edit"], async (req, res) => {
   try {
     const n = Number(req.params.version);
     if (!Number.isInteger(n) || n < 1) throw new ApiError("VALIDATION_FAILED", 400, "version must be a positive whole number");
@@ -440,7 +475,7 @@ router.post("/:id/versions/:version/restore", async (req, res) => {
 });
 
 // POST /api/characters/:id/generate-video — through the injected generation gate
-router.post("/:id/generate-video", async (req, res) => {
+router.post("/:id/generate-video", ["generate", "spend"], async (req, res) => {
   try {
     const character = await req.prisma.character.findUnique({ where: { id: req.params.id } });
     if (!character) return sendError(res, new ApiError("NOT_FOUND", 404, "Character not found"));
@@ -471,15 +506,11 @@ router.post("/:id/generate-video", async (req, res) => {
       }
       imageUrl = character.referenceImageUrl;
     }
-    const result = await generateVideo(
-      req.generationGate,
-      {
-        imageUrl,
-        prompt: buildPromptFromCharacter(character),
-        options: { aspectRatio: character.aspectRatio === "9:16" ? "9:16" : "16:9", duration },
-      },
-      generationKeys(req, character, `video-${source}`)
-    );
+    const result = await runAsJob(req, {
+      jobKind: "character.generate-video", kind: "video", targetId: character.id,
+      keys: generationKeys(req, character, `video-${source}`),
+      input: { imageUrl, prompt: buildPromptFromCharacter(character), options: { aspectRatio: character.aspectRatio === "9:16" ? "9:16" : "16:9", duration } },
+    }, async (r) => r);
     res.json({ videoUrl: result.videoUrl, character });
   } catch (err) {
     return routeError(res, err, "Failed to generate video", "POST /characters/:id/generate-video");

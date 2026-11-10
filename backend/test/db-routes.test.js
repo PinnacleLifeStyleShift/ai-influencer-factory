@@ -17,7 +17,7 @@ const GATE_ENV = {
   PROVIDER_PRICES_USD: JSON.stringify({ "higgsfield:soul": "1.00", "fal:kling-v2.1-i2v": "1.00" }),
   SPEND_CAP_PER_JOB_USD: "5",
   SPEND_CAP_DAILY_USD: "50",
-  SPEND_CAP_MONTHLY_USD: "100",
+  SPEND_CAP_MONTHLY_USD: "100", PRICE_CURRENCY: "USD", PRICE_VERSION: "test-fixture-v1", SPEND_CAP_TIMEZONE: "UTC",
 };
 
 let prisma;
@@ -181,15 +181,16 @@ test("generic content routes cannot schedule, publish or alter approved content"
   // Content created from an approved revision.
   const raw = await makeReviewItem(prisma);
   await approve(app, await getItem(app, raw.id));
-  const { body: s } = await app.call(`/api/pipeline/${raw.id}/schedule`, { method: "POST", token: TOKEN, body: { scheduledDate: "2026-12-01" } }).then(json);
+  const { body: s } = await app.call(`/api/pipeline/${raw.id}/schedule`, { method: "POST", token: TOKEN, body: {} }).then(json);
   const cid = s.content.id;
 
-  for (const body of [{ caption: "edited" }, { platform: "TikTok" }, { hashtags: "#new" }, { title: "new title" }, { status: "draft" }]) {
+  // The date is part of the approval now (Package E), so it is locked too.
+  for (const body of [{ caption: "edited" }, { platform: "TikTok" }, { hashtags: "#new" }, { title: "new title" }, { status: "draft" }, { scheduledDate: "2026-12-02" }]) {
     const r = await app.call(`/api/content/${cid}`, { method: "PUT", token: TOKEN, body }).then(json);
     assert.equal(r.body.code, "APPROVAL_LOCKED", JSON.stringify(body));
   }
-  // Re-sending unchanged values (as the calendar form does) plus a date change is allowed.
-  const ok = await app.call(`/api/content/${cid}`, { method: "PUT", token: TOKEN, body: { caption: s.content.caption, status: "scheduled", scheduledDate: "2026-12-02" } }).then(json);
+  // Re-sending unchanged values (as the calendar form does) plus notes is allowed.
+  const ok = await app.call(`/api/content/${cid}`, { method: "PUT", token: TOKEN, body: { caption: s.content.caption, status: "scheduled", scheduledDate: s.content.scheduledDate, notes: "n" } }).then(json);
   assert.equal(ok.status, 200);
   const stored = await prisma.content.findUnique({ where: { id: cid } });
   assert.equal(stored.caption, "Synthetic caption");
@@ -209,7 +210,7 @@ test("concurrent schedule requests create exactly one calendar entry", opts, () 
   const raw = await makeReviewItem(prisma);
   await approve(app, await getItem(app, raw.id));
   const responses = await Promise.all(Array.from({ length: 12 }, () =>
-    app.call(`/api/pipeline/${raw.id}/schedule`, { method: "POST", token: TOKEN, body: { scheduledDate: "2026-12-01" } }).then(json)));
+    app.call(`/api/pipeline/${raw.id}/schedule`, { method: "POST", token: TOKEN, body: {} }).then(json)));
   assert.ok(responses.every((r) => r.status === 200), JSON.stringify(responses.map((r) => r.status)));
   assert.equal(await prisma.content.count(), 1);
   assert.equal(new Set(responses.map((r) => r.body.content.id)).size, 1);
@@ -340,7 +341,9 @@ test("new media on an approved item invalidates the approval", opts, async () =>
   await withApp(async (app) => {
     const raw = await makeReviewItem(prisma);
     await approve(app, await getItem(app, raw.id));
-    const r = await app.call("/api/pipeline/generate-content", { method: "POST", token: TOKEN, body: { pipelineItemId: raw.id } }).then(json);
+    const refused = await app.call("/api/pipeline/generate-content", { method: "POST", token: TOKEN, body: { pipelineItemId: raw.id } }).then(json);
+    assert.equal(refused.body.code, "APPROVED_CONTENT", "approved content is not regenerated without confirmation");
+    const r = await app.call("/api/pipeline/generate-content", { method: "POST", token: TOKEN, body: { pipelineItemId: raw.id, confirmReplaceApproved: true } }).then(json);
     assert.equal(r.status, 200);
     assert.equal(r.body.pipelineItem.stage, "content_generated");
     assert.equal(r.body.pipelineItem.approvedHash, null);

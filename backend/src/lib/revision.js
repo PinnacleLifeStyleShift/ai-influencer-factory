@@ -12,11 +12,31 @@ import { stableStringify } from "../services/spendLedger.js";
 export const DESTINATIONS = Object.freeze(["TikTok", "Instagram", "YouTube"]);
 
 // characterVersionId: approval is for content made from a specific version.
-export const PUBLISH_FIELDS = Object.freeze(["imageUrl", "videoUrl", "caption", "hashtags", "platform", "scriptId", "characterVersionId"]);
+export const PUBLISH_FIELDS = Object.freeze([
+  "imageUrl", "videoUrl", "caption", "hashtags", "platform", "scriptId", "characterVersionId",
+  // Content package: script version, per-shot media, disclosure, export settings.
+  "scriptVersionId", "shotMedia", "disclosure", "exportSettings",
+]);
+
+// The destination schedule is publish-relevant too (Package E): approval is
+// for "this content, there, at this instant in this zone". WHY version-bound:
+// changing the time is a change to what was approved, so it needs a new
+// approval; there is no separate, weaker "reschedule" permission.
+// Added only when set, so items without a schedule keep their earlier hash.
+export const SCHEDULE_FIELDS = Object.freeze(["scheduledAt", "scheduleTimezone"]);
 
 export function snapshotOf(item) {
   const snap = { pipelineItemId: item.id, revision: item.revision };
   for (const f of PUBLISH_FIELDS) snap[f] = item[f] ?? null;
+  for (const f of SCHEDULE_FIELDS) {
+    const v = item[f];
+    if (v !== null && v !== undefined) snap[f] = v instanceof Date ? v.toISOString() : v;
+  }
+  // Cross-post destinations (publishing): approval names every place the
+  // original may go. Added only when non-empty, like the schedule.
+  if (Array.isArray(item.crossPostDestinations) && item.crossPostDestinations.length) {
+    snap.crossPostDestinations = [...item.crossPostDestinations].sort();
+  }
   return snap;
 }
 
@@ -25,6 +45,11 @@ export function snapshotHash(item) {
 }
 
 /** Media type is decided by what will actually be posted: video wins over its source still. */
+/** Every destination this approved item may be delivered to, primary first. */
+export function destinationsOf(item) {
+  return [item.platform, ...(item.crossPostDestinations || [])].filter((d, i, a) => d && a.indexOf(d) === i);
+}
+
 export function mediaTypeOf(item) {
   if (item.videoUrl) return "video";
   if (item.imageUrl) return "image";
