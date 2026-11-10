@@ -53,13 +53,16 @@ try {
   page.on("dialog", (d) => d.accept(d.message().includes("owner API token") ? TOKEN : undefined));
   await page.route("**/*", (route) => (["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort()));
   await page.goto(WEB);
-  for (const name of ["Dashboard", "Characters", "Pipeline", "Generation Jobs", "Content Calendar", "Campaigns", "Measurement"]) {
+  for (const name of ["Dashboard", "Characters", "Pipeline", "Generation Jobs", "Content Calendar", "Campaigns", "Measurement", "Operations"]) {
     await page.getByRole("button", { name }).first().click();
     await page.waitForLoadState("networkidle");
   }
   // The app really talked to its API under the policy.
   await page.getByRole("button", { name: "Characters" }).first().click();
   await page.waitForLoadState("networkidle");
+  await page.getByRole("button", { name: "Operations" }).first().click();
+  await page.getByLabel("Generation switch").waitFor();
+  await page.screenshot({ path: path.join(root, "docs/screenshots/pkg-m-operations.png") });
   assert.deepEqual(violations, [], "no Content-Security-Policy violations");
   assert.deepEqual(errors, [], "no page errors");
   console.log("Production build e2e passed (served with security headers; every page opened with no CSP violation or page error)");

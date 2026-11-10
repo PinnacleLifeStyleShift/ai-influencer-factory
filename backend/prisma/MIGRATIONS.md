@@ -43,3 +43,4 @@ is no longer used at build time, at startup, or in tests.
 | `20261110090000_reconciliation_revisions` | Additive only: `revision` (default 0) on `generation_steps` and `publish_deliveries` for compare-and-swap reconciliation |
 | `20261110100000_rights_revocation` | Additive only: `revoked_at`, `revoke_reason` on `rights_records`; `rights_hold_at`, `rights_hold_reason` on `pipeline_items` |
 | `20261110110000_asset_versions` | Additive only: `asset_versions` table; `rendered_asset_id` on `pipeline_items` |
+| `20261110120000_system_controls` | Additive only: `system_controls` table (runtime switches such as the generation pause) |
