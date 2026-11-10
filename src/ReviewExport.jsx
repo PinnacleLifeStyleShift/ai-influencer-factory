@@ -98,7 +98,8 @@ export default function ReviewExport({ item, hasShots, onChanged }) {
     setResult(null);
     setBusy(true);
     try {
-      const r = await api.pipeline.createExport(item.id);
+      // The exact version on screen; a change meanwhile is a conflict, not a surprise export.
+      const r = await api.pipeline.createExport(item.id, { expectedRevision: item.revision, approvedHash: item.approvedHash });
       setResult({ ok: true, export: r.export, replayed: r.replayed });
     } catch (e) {
       setResult({ ok: false, message: e.message, failures: e.details?.failures || [] });
@@ -199,7 +200,13 @@ export default function ReviewExport({ item, hasShots, onChanged }) {
                   <span className={e.current ? "text-green-400" : "text-zinc-500"}>{e.current ? "Current" : "Superseded"}</span>{" "}
                   · revision {e.revision} · {e.manifestHash.slice(0, 10)}…{" "}
                   <button className="underline focus:outline focus:outline-2 focus:outline-[#C8FF00]" onClick={() => download(e, "json")}>JSON</button>{" "}
-                  <button className="underline focus:outline focus:outline-2 focus:outline-[#C8FF00]" onClick={() => download(e, "text")}>Readable</button>
+                  <button className="underline focus:outline focus:outline-2 focus:outline-[#C8FF00]" onClick={() => download(e, "text")}>Readable</button>{" "}
+                  <button className="underline focus:outline focus:outline-2 focus:outline-[#C8FF00]" onClick={async () => {
+                    try {
+                      const v = await api.pipeline.verifyExport(item.id, e.id);
+                      setMessage(v.intact ? "All files present and unchanged" : `Incomplete: ${v.missing.length} missing, ${v.changed.length} changed`);
+                    } catch (err) { setMessage(err.message); }
+                  }}>Verify files</button>
                 </li>
               ))}
             </ul>

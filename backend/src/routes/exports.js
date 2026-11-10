@@ -1,4 +1,5 @@
 import { secureRouter } from "../lib/secureRouter.js";
+import { onlyFields } from "../lib/requests.js";
 import { ApiError, routeError } from "../lib/errors.js";
 import { snapshotHash } from "../lib/revision.js";
 import { isUniqueViolation } from "../lib/requests.js";
@@ -20,7 +21,7 @@ const handle = (label, fn) => async (req, res) => {
 const notFound = () => new ApiError("NOT_FOUND", 404, "Pipeline item not found");
 
 // POST /api/pipeline/:id/exports  -> { export, replayed }
-router.post("/:id/exports", ["export"], handle("POST /pipeline/:id/exports", async (req, res) => {
+router.post("/:id/exports", ["export"], onlyFields(["expectedRevision", "approvedHash"]), handle("POST /pipeline/:id/exports", async (req, res) => {
   const prisma = req.prisma;
   const item = await prisma.pipelineItem.findUnique({ where: { id: req.params.id } });
   if (!item) throw notFound();
@@ -32,6 +33,15 @@ router.post("/:id/exports", ["export"], handle("POST /pipeline/:id/exports", asy
   if (item.rightsHoldAt) throw rightsHoldError(item);
   if (!approvalIsCurrent(item)) throw new ApiError("APPROVAL_STALE", 409, "The approved snapshot no longer matches the item; review and approve the current version");
   if (claimIsLive(item)) throw new ApiError("GENERATION_IN_PROGRESS", 409, "A generation for this item is in progress; wait for it to finish");
+  // Optional, but the UI always sends them: export exactly the version the
+  // operator was looking at, or nothing.
+  const { expectedRevision, approvedHash } = req.body || {};
+  if (expectedRevision !== undefined && (!Number.isInteger(expectedRevision) || expectedRevision !== item.revision)) {
+    throw new ApiError("APPROVAL_STALE", 409, "The item changed since you reviewed it; reload before exporting", { currentRevision: item.revision });
+  }
+  if (approvedHash !== undefined && approvedHash !== item.approvedHash) {
+    throw new ApiError("APPROVAL_STALE", 409, "The approved snapshot is not the one you reviewed; reload before exporting");
+  }
 
   const built = await buildExport(prisma, req.mediaStore, item);
 
@@ -53,7 +63,8 @@ router.post("/:id/exports", ["export"], handle("POST /pipeline/:id/exports", asy
       replayed = true;
     }
   }
-  res.status(replayed ? 200 : 201).json({ success: true, replayed, export: { ...record, current: true } });
+  // Exports are built synchronously: "ready" here; failures answer with an error and record nothing.
+  res.status(replayed ? 200 : 201).json({ success: true, replayed, exportId: record.id, state: "ready", export: { ...record, current: true } });
 }));
 
 async function currentHashOf(prisma, id) {
@@ -84,6 +95,23 @@ router.get("/:id/exports/:exportId/download", handle("GET /pipeline/:id/exports/
   }
   res.set("Content-Disposition", `attachment; filename="${base}.json"`);
   res.type("application/json").send(JSON.stringify(record.manifest, null, 2));
+}));
+
+// GET /api/pipeline/:id/exports/:exportId/verify
+// Re-reads every file the manifest lists and compares it with its recorded
+// checksum. A missing or changed file makes the export "incomplete": an old
+// manifest never looks complete after its files were deleted or replaced.
+router.get("/:id/exports/:exportId/verify", handle("GET /pipeline/:id/exports/:exportId/verify", async (req, res) => {
+  const record = await req.prisma.exportManifest.findFirst({ where: { id: req.params.exportId, pipelineItemId: req.params.id } });
+  if (!record) throw new ApiError("NOT_FOUND", 404, "Export not found");
+  if (!req.mediaStore?.configured) throw new ApiError("MEDIA_STORE_NOT_CONFIGURED", 409, "Verification needs media storage, which is not configured");
+  const missing = []; const changed = [];
+  for (const f of record.manifest.media || []) {
+    const r = await req.mediaStore.read(f.url);
+    if (!r.ok) { missing.push({ url: f.url, problem: r.problem }); continue; }
+    if (inspectMedia(r.bytes).sha256 !== f.sha256) changed.push({ url: f.url });
+  }
+  res.json({ exportId: record.id, intact: !missing.length && !changed.length, state: !missing.length && !changed.length ? "complete" : "incomplete", missing, changed, checkedAt: new Date().toISOString() });
 }));
 
 // POST /api/pipeline/:id/measure-media
