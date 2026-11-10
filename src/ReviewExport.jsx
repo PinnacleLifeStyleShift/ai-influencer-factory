@@ -117,6 +117,16 @@ export default function ReviewExport({ item, hasShots, onChanged }) {
   const zone = viewerZone();
   return (
     <section className="border-t border-[#2a2a3a] pt-4 mt-4 min-w-0" aria-label="Review, schedule and export">
+      {item.rightsHoldAt && (
+        <div className="mb-3 p-3 rounded-lg border border-red-400/40 text-[11px] text-red-300" role="alert">
+          <div className="font-semibold">On hold: {item.rightsHoldReason}</div>
+          <div className="text-zinc-400">Approval, scheduling, export and publishing stop until the owner reviews this item.</div>
+          <button className={`${ghost} mt-2`} disabled={busy} onClick={() => {
+            const note = window.prompt("What did you review (e.g. regenerated without the revoked reference)?");
+            if (note) quiet(run(() => api.pipeline.clearRightsHold(item.id, note), "Hold cleared"));
+          }}>Clear hold after review (owner)</button>
+        </div>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 [&>div]:min-w-0">
         <div>
           <div className={sub}>Review</div>

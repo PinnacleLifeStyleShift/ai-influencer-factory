@@ -6,6 +6,7 @@ import { buildExport, approvalIsCurrent, readableManifest } from "../services/ex
 import { inspectMedia } from "../services/mediaInspect.js";
 import { claimIsLive } from "./pipeline.js";
 import { invalidatingChange } from "../lib/revision.js";
+import { rightsHoldError } from "../services/rights.js";
 
 /**
  * Export of approved content, and measuring stored media.
@@ -27,6 +28,7 @@ router.post("/:id/exports", ["export"], handle("POST /pipeline/:id/exports", asy
   if (!["approved", "scheduled"].includes(item.stage)) {
     throw new ApiError("EXPORT_NOT_APPROVED", 409, `Only approved content can be exported (current stage: ${item.stage})`);
   }
+  if (item.rightsHoldAt) throw rightsHoldError(item);
   if (!approvalIsCurrent(item)) throw new ApiError("APPROVAL_STALE", 409, "The approved snapshot no longer matches the item; review and approve the current version");
   if (claimIsLive(item)) throw new ApiError("GENERATION_IN_PROGRESS", 409, "A generation for this item is in progress; wait for it to finish");
 

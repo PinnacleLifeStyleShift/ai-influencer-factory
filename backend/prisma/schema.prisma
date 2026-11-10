@@ -278,6 +278,10 @@ model PipelineItem {
   // Extra destinations for the same original (cross-post), part of the
   // approved snapshot. One original posted to several places is one job.
   crossPostDestinations String[] @default([]) @map("cross_post_destinations")
+  // Set when rights of a reference this item pinned or sent are revoked:
+  // approval, scheduling, export and publishing stop until the owner reviews.
+  rightsHoldAt     DateTime? @map("rights_hold_at")
+  rightsHoldReason String?   @map("rights_hold_reason")
 
   reviewNotes   String?   @map("review_notes")
   approvedAt    DateTime? @map("approved_at")
@@ -450,6 +454,10 @@ model RightsRecord {
   recordedAt          DateTime  @default(now()) @map("recorded_at")
   approvedBy          String?   @map("approved_by")
   approvedAt          DateTime? @map("approved_at")
+  // A revocation is a new record (history is never rewritten): no permitted
+  // uses, the owner's reason and time.
+  revokedAt           DateTime? @map("revoked_at")
+  revokeReason        String?   @map("revoke_reason")
 
   @@index([imageId, recordedAt])
   @@map("rights_records")

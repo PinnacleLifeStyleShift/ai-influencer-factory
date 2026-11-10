@@ -155,6 +155,7 @@ export const characterImages = {
   rights: (imageId) => request(`/api/character-images/${imageId}/rights`),
   recordRights: (imageId, data) => request(`/api/character-images/${imageId}/rights`, { method: "POST", body: JSON.stringify(data) }),
   approveRights: (imageId, recordId) => request(`/api/character-images/${imageId}/rights/approve`, { method: "POST", body: JSON.stringify({ recordId }) }),
+  revokeRights: (imageId, reason) => request(`/api/character-images/${imageId}/rights/revoke`, { method: "POST", body: JSON.stringify({ reason }) }),
 };
 
 // ─── Measurement (readings with provenance) ───────────────
@@ -253,6 +254,7 @@ export const pipeline = {
     request(`/api/pipeline/${id}/reject`, { method: "POST", body: JSON.stringify(data) }),
   schedule: (id, data = {}) =>
     request(`/api/pipeline/${id}/schedule`, { method: "POST", body: JSON.stringify(data) }),
+  clearRightsHold: (id, note) => request(`/api/pipeline/${id}/rights-hold/clear`, { method: "POST", body: JSON.stringify({ note }) }),
   cancelSchedule: (id, reason) =>
     request(`/api/pipeline/${id}/cancel-schedule`, { method: "POST", body: JSON.stringify({ reason }) }),
   measureMedia: (id) => request(`/api/pipeline/${id}/measure-media`, { method: "POST", body: "{}" }),

@@ -1,6 +1,6 @@
 import { secureRouter } from "../lib/secureRouter.js";
 import { ApiError, routeError } from "../lib/errors.js";
-import { recordRights, approveRights, clearanceFor } from "../services/rights.js";
+import { recordRights, approveRights, clearanceFor, revokeRights } from "../services/rights.js";
 import { USES } from "../services/rights.js";
 
 /** Rights records for character images (see services/rights.js). */
@@ -37,6 +37,15 @@ router.post("/:imageId/rights/approve", ["admin"], async (req, res) => {
     res.json(await approveRights(req.prisma, req.params.imageId, { by: req.principal.id, recordId }));
   } catch (err) {
     return routeError(res, err, "Failed to approve rights", "POST /character-images/:imageId/rights/approve");
+  }
+});
+
+// POST /api/character-images/:imageId/rights/revoke { reason } — owner revocation
+router.post("/:imageId/rights/revoke", ["admin"], async (req, res) => {
+  try {
+    res.json(await revokeRights(req.prisma, req.params.imageId, { reason: req.body?.reason, by: req.principal.id }));
+  } catch (err) {
+    return routeError(res, err, "Failed to revoke rights", "POST /character-images/:imageId/rights/revoke");
   }
 });
 

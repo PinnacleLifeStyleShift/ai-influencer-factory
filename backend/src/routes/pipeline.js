@@ -15,7 +15,7 @@ import { generateCaption } from "../services/captionGeneration.js";
 import { buildPromptFromCharacter } from "../services/imageGeneration.js";
 import { requestHash } from "../services/spendLedger.js";
 import { ensurePublishedVersion, promptSourceOf, promptHash } from "../services/characterVersions.js";
-import { clearanceFor } from "../services/rights.js";
+import { clearanceFor, rightsHoldError } from "../services/rights.js";
 import {
   createScriptVersion, initialScriptInput, DEFAULT_DISCLOSURE, DEFAULT_EXPORT_SETTINGS,
 } from "../services/scriptVersions.js";
@@ -525,7 +525,23 @@ router.post("/generate-content", ["generate", "spend"], handle("POST /pipeline/g
       steps: steps.map((st, i) => ({ kind: st.kind, provider: checks[i].provider, model: checks[i].model, idempotencyKey: st.idempotencyKey })),
       by: req.principal?.id,
     });
-    await gate.runWorkflow(steps, { hooks: journal.hooks });
+    // WHY a recheck right before submission: rights can be revoked while the
+    // workflow reserves money; nothing is sent with references no longer cleared.
+    const recheckRights = async () => {
+      if (!referencesSent.length) return;
+      const images = await prisma.characterImage.findMany({ where: { characterId: item.characterId, fingerprint: { in: referencesSent } } });
+      const blocked = [];
+      for (const img of images) {
+        const c = await clearanceFor(prisma, img.id, "provider_input");
+        if (!c.cleared) blocked.push({ imageId: img.id, missing: c.missing });
+      }
+      if (blocked.length || images.length !== referencesSent.length) {
+        const e = new ApiError("REFERENCE_NOT_CLEARED", 409, "Reference images are no longer cleared for provider use; nothing was sent", { blocked });
+        e.preSubmitRefusal = true;
+        throw e;
+      }
+    };
+    await gate.runWorkflow(steps, { hooks: { ...journal.hooks, beforeSubmit: async (i) => { await recheckRights(); await journal.hooks.beforeSubmit(i); } } });
     finished = true;
   } catch (err) {
     // A (simulated) process death leaves everything exactly as it was.
@@ -671,6 +687,7 @@ router.post("/:id/approve", ["approve"], handle("POST /pipeline/:id/approve", as
   if (item.stage !== "review") {
     throw new ApiError("INVALID_TRANSITION", 409, `Only items in review can be approved (current stage: ${item.stage})`);
   }
+  if (item.rightsHoldAt) throw rightsHoldError(item);
   const currentHash = snapshotHash(item);
   if (revision !== item.revision || clientHash !== currentHash) {
     throw new ApiError("APPROVAL_STALE", 409, "The item changed since it was reviewed; review the current version",
@@ -775,6 +792,7 @@ router.post("/:id/schedule", ["schedule"], handle("POST /pipeline/:id/schedule",
       if (item.approvedRevision !== item.revision || item.approvedHash !== hash) {
         throw new ApiError("APPROVAL_STALE", 409, "Approved snapshot no longer matches the item; re-approval required");
       }
+      if (item.rightsHoldAt) throw rightsHoldError(item);
       if (!item.scheduledAt || !item.scheduleTimezone) {
         throw new ApiError("SCHEDULE_TIME_REQUIRED", 409,
           "Set the destination time and time zone on the item, then approve it; the approval covers the schedule");
@@ -875,6 +893,22 @@ router.post("/:id/cancel-schedule", ["schedule"], handle("POST /pipeline/:id/can
   const updated = await prisma.pipelineItem.findUnique({ where: { id: item.id }, include: ITEM_INCLUDE });
   const content = item.contentId ? await prisma.content.findUnique({ where: { id: item.contentId } }) : null;
   res.json({ success: true, pipelineItem: serializeItem(updated), content });
+}));
+
+// POST /api/pipeline/:id/rights-hold/clear { note } — the owner reviewed the
+// item after a rights revocation (e.g. regenerated without that reference).
+router.post("/:id/rights-hold/clear", ["admin"], handle("POST /pipeline/:id/rights-hold/clear", async (req, res) => {
+  const note = req.body?.note;
+  if (typeof note !== "string" || note.trim().length < 5 || note.length > 1000) throw invalid("note is required: what was reviewed (5-1000 characters)");
+  const item = await req.prisma.pipelineItem.findUnique({ where: { id: req.params.id } });
+  if (!item) throw notFound();
+  const { count } = await req.prisma.pipelineItem.updateMany({
+    where: { id: item.id, rightsHoldAt: { not: null } },
+    data: { rightsHoldAt: null, rightsHoldReason: null, reviewNotes: `Rights hold cleared by ${req.principal?.role || "owner"}: ${note.trim()}`.slice(0, 2000) },
+  });
+  if (count !== 1) throw new ApiError("NO_RIGHTS_HOLD", 409, "This item has no rights hold");
+  const updated = await req.prisma.pipelineItem.findUnique({ where: { id: item.id }, include: ITEM_INCLUDE });
+  res.json({ success: true, pipelineItem: serializeItem(updated) });
 }));
 
 export default router;
