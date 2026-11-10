@@ -4,6 +4,7 @@ import { snapshotHash, mediaTypeOf } from "../lib/revision.js";
 import { inspectMedia } from "./mediaInspect.js";
 import { offsetLabel } from "../lib/zonedTime.js";
 import { ApiError } from "../lib/errors.js";
+import { clipSource, traceAsset, publicationRights, costSummary } from "./assetLineage.js";
 
 /**
  * Export of the approved, immutable version of a pipeline item.
@@ -15,7 +16,9 @@ import { ApiError } from "../lib/errors.js";
  * construction (allow-list): prompts, provider request ids, reservation ids,
  * logs, internal notes, credentials and reference images themselves.
  */
-export const MANIFEST_SCHEMA = "ai-influencer-factory/export-manifest@1";
+// @2: rendered files carry their lineage; rights are re-checked through it;
+// cost counts each paid generation once, per currency.
+export const MANIFEST_SCHEMA = "ai-influencer-factory/export-manifest@2";
 const RATIOS = { "9:16": 9 / 16, "1:1": 1, "16:9": 16 / 9 };
 
 export function approvalIsCurrent(item) {
@@ -72,59 +75,66 @@ export async function buildExport(prisma, mediaStore, item) {
     throw new ApiError("EXPORT_MEDIA_INVALID", 422, "Some media failed verification; nothing was exported", { failures });
   }
 
-  // Provenance per file: what made it and what it actually cost.
-  const applications = await prisma.generationApplication.findMany({ where: { pipelineItemId: item.id } });
-  const reservationIds = new Set(media.map((m) => m.reservationId || applications.filter((a) => a.mediaUrl === m.url).at(-1)?.reservationId).filter(Boolean));
-  const reservations = reservationIds.size
-    ? await prisma.generationReservation.findMany({ where: { id: { in: [...reservationIds] } } })
-    : [];
-  const byId = new Map(reservations.map((r) => [r.id, r]));
-
+  // Provenance per file, by stable identity: the generation application
+  // (raw clips) or the recorded lineage (a rendered file).
   const rendered = item.renderedAssetId ? await prisma.assetVersion.findUnique({ where: { id: item.renderedAssetId } }) : null;
-  const referencesSent = new Set();
-  const files = media.map((m) => {
-    const app = applications.filter((a) => a.mediaUrl === m.url || a.reservationId === m.reservationId).at(-1);
-    (app?.referencesSent || []).forEach((f) => referencesSent.add(f));
-    const r = byId.get(m.reservationId || app?.reservationId);
-    const settledActual = r && r.state === "settled" && r.actualMicros !== null ? micros(r.actualMicros) : null;
+  if (item.renderedAssetId && !rendered) throw new ApiError("LINEAGE_UNVERIFIED", 409, "The rendered file's record is missing; nothing was exported", { problems: [{ problem: "rendered asset record missing" }] });
+  const sources = [];
+  for (const m of media) {
+    if (rendered && rendered.storageRef === m.url) {
+      if (m.info.sha256 !== rendered.contentHash) {
+        throw new ApiError("EXPORT_MEDIA_INVALID", 422, "The rendered file's bytes no longer match the recorded asset; nothing was exported", { failures: [{ url: m.url, problems: ["content hash differs from the rendered asset version"] }] });
+      }
+      sources.push({ kind: "rendered", trace: await traceAsset(prisma, rendered.id, { characterId: item.characterId }) });
+    } else if (m.role === "shot") {
+      sources.push({ kind: "clip", source: await clipSource(prisma, item, m) });
+    } else {
+      const apps = await prisma.generationApplication.findMany({ where: { pipelineItemId: item.id, mediaUrl: m.url }, orderBy: { appliedAt: "asc" } });
+      sources.push({ kind: "clip", source: apps.length ? { inputKind: "generation", application: apps.at(-1) } : { inputKind: "manual" } });
+    }
+  }
+  const applications = sources.flatMap((x) => (x.kind === "rendered" ? x.trace.leaves : x.source.application ? [x.source.application] : []));
+  const reservationIds = [...new Set(applications.map((a) => a.reservationId))];
+  const reservations = reservationIds.length ? await prisma.generationReservation.findMany({ where: { id: { in: reservationIds } } }) : [];
+  const byId = new Map(reservations.map((r) => [r.id, r]));
+  const costOf = (r) => {
+    if (!r) return { status: "no_paid_generation_recorded" };
+    const settledActual = r.state === "settled" && r.actualMicros !== null ? micros(r.actualMicros) : null;
+    return { currency: r.currency, actualMicros: settledActual, status: settledActual !== null ? "actual" : r.state === "settled" ? "settled_at_estimate" : r.state, priceVersion: r.priceVersion };
+  };
+  // Lineage for the manifest: no reservation ids (internal), facts only.
+  const shown = (entries) => entries.map((e) => {
+    const r = e.reservationId ? byId.get(e.reservationId) : null;
+    return {
+      shotIndex: e.shotIndex, shotKey: e.shotKey, clipSha256: e.clipSha256,
+      source: e.source === "asset_version" ? "assembly" : e.source,
+      ...(e.source === "generation" ? { provider: r ? `${r.provider}:${r.model}` : null, conditioning: e.conditioning, referencesSent: e.referencesSent, cost: costOf(r) } : {}),
+      ...(e.inputs ? { inputs: shown(e.inputs) } : {}),
+    };
+  });
+
+  const files = media.map((m, i) => {
+    const src = sources[i];
+    const app = src.kind === "clip" ? src.source.application : null;
+    const r = app ? byId.get(app.reservationId) : null;
     return {
       role: m.role, ...(m.shotIndex !== undefined ? { shotIndex: m.shotIndex } : {}),
       url: m.url, mime: m.info.mime, bytes: m.info.bytes, sha256: m.info.sha256,
       width: m.info.width, height: m.info.height, durationSec: m.info.durationSec,
       provider: r ? `${r.provider}:${r.model}` : null,
       inputs: app ? { characterVersionId: app.characterVersionId, conditioning: app.conditioning, referencesSent: app.referencesSent } : null,
-      ...(rendered && rendered.storageRef === m.url ? { assembledFrom: rendered.provenance.shots, assembly: { tool: rendered.provenance.tool, settings: rendered.provenance.settings, decodeCheck: rendered.provenance.decodeCheck } } : {}),
-      cost: r
-        ? { currency: r.currency, actualMicros: settledActual, status: settledActual !== null ? "actual" : r.state === "settled" ? "settled_at_estimate" : r.state, priceVersion: r.priceVersion }
-        : { status: "no_paid_generation_recorded" },
+      ...(src.kind === "rendered" ? { assembledFrom: shown(src.trace.tree), assembly: { tool: rendered.provenance.tool, settings: rendered.provenance.settings, decodeCheck: rendered.provenance.decodeCheck } } : {}),
+      cost: src.kind === "rendered" ? { status: "see_assembled_from" } : costOf(r),
     };
   });
 
-  // Rights of the references that were actually sent. A reference without an
-  // approved record permitting publication blocks export.
-  const rights = [];
-  const rightsProblems = [];
-  for (const fp of [...referencesSent].sort()) {
-    const img = await prisma.characterImage.findFirst({ where: { characterId: item.characterId, fingerprint: fp }, include: { rights: { orderBy: { recordedAt: "desc" }, take: 1 } } });
-    const rec = img?.rights?.[0];
-    if (!rec || !rec.approvedAt || !rec.permittedUses.includes("publication") || (rec.expiresAt && rec.expiresAt < new Date())) {
-      rightsProblems.push(fp);
-    }
-    rights.push({
-      referenceFingerprint: fp, imageId: img?.id || null, checksum: img?.checksum || null,
-      basis: rec?.basis || null, permittedUses: rec?.permittedUses || [], approved: Boolean(rec?.approvedAt),
-      likenessOfRealPerson: rec?.likenessOfRealPerson ?? null,
-      consentReference: rec?.consentReference || null, licenseReference: rec?.licenseReference || null,
-    });
-  }
-  if (rightsProblems.length) {
-    throw new ApiError("RIGHTS_INCOMPLETE", 409, "A reference used for this content has no approved rights record that permits publication", { references: rightsProblems });
-  }
+  // Today's rights of every reference actually sent, through any assembly.
+  const rights = await publicationRights(prisma, item.characterId, applications.flatMap((a) => a.referencesSent || []));
+  const cost = costSummary(reservationIds.map((id) => byId.get(id) || { id, state: "missing", actualMicros: null, currency: null }));
 
   const sv = item.scriptVersionId ? await prisma.scriptVersion.findUnique({ where: { id: item.scriptVersionId } }) : null;
   const cv = item.characterVersionId ? await prisma.characterVersion.findUnique({ where: { id: item.characterVersionId } }) : null;
   const character = await prisma.character.findUnique({ where: { id: item.characterId }, select: { id: true, name: true } });
-  const actualKnown = files.reduce((n, f) => n + (f.cost.actualMicros || 0), 0);
 
   const manifest = {
     schema: MANIFEST_SCHEMA,
@@ -150,7 +160,7 @@ export async function buildExport(prisma, mediaStore, item) {
     } : null,
     media: files,
     rights,
-    cost: { currency: files.find((f) => f.cost.currency)?.cost.currency || null, actualKnownMicros: actualKnown, unknownActualFiles: files.filter((f) => f.cost.status !== "actual" && f.cost.status !== "no_paid_generation_recorded").length },
+    cost,
     excluded: ["generation prompts", "provider request ids", "reservation ids", "internal notes and logs", "credentials", "reference images"],
   };
   const canonical = stableStringify(manifest);
@@ -170,7 +180,8 @@ export function readableManifest(manifest, { current }) {
     `Character: ${manifest.character.name} (fictional), version ${manifest.character.version ?? "unpinned"}`,
     `Disclosure: ${manifest.disclosure}`,
     "", "Caption:", manifest.caption, "", `Hashtags: ${manifest.hashtags}`, "", "Media:",
-    ...manifest.media.map((f) => `- ${f.role}${f.shotIndex !== undefined ? ` ${f.shotIndex + 1}` : ""}: ${f.mime} ${f.width}x${f.height}${f.durationSec ? ` ${f.durationSec}s` : ""}, ${f.bytes} bytes, sha256 ${f.sha256}, ${f.provider || "no paid generation"}, cost ${f.cost.actualMicros !== null && f.cost.actualMicros !== undefined ? `${(f.cost.actualMicros / 1e6).toFixed(2)} ${f.cost.currency}` : f.cost.status}\n  ${f.url}`),
+    ...manifest.media.map((f) => `- ${f.role}${f.shotIndex !== undefined ? ` ${f.shotIndex + 1}` : ""}: ${f.mime} ${f.width}x${f.height}${f.durationSec ? ` ${f.durationSec}s` : ""}, ${f.bytes} bytes, sha256 ${f.sha256}, ${f.provider || (f.assembledFrom ? `assembled from ${f.assembledFrom.length} clips` : "no paid generation")}, cost ${f.cost.actualMicros !== null && f.cost.actualMicros !== undefined ? `${(f.cost.actualMicros / 1e6).toFixed(2)} ${f.cost.currency}` : f.cost.status}\n  ${f.url}`),
+    "", `Generation cost: ${manifest.cost.paidGenerations} paid generation(s); ${Object.entries(manifest.cost.byCurrency).map(([c, m]) => `${(m / 1e6).toFixed(2)} ${c}`).join(" + ") || "none known"}${manifest.cost.unknownActual ? `; ${manifest.cost.unknownActual} with unknown actual cost` : ""} (each counted once)`,
     "", "Rights of references used:",
     ...(manifest.rights.length ? manifest.rights.map((r) => `- ${r.referenceFingerprint.slice(0, 12)}…: ${r.basis}, permits ${r.permittedUses.join(", ")}`) : ["- none sent"]),
     "", "Evidence for claims:",

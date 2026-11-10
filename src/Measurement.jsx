@@ -162,7 +162,7 @@ export default function Measurement() {
                   <table className="w-full text-[11px] text-zinc-300">
                     <thead><tr className="text-left text-zinc-500"><th>Metric</th><th>Activity in period</th><th>Latest totals</th></tr></thead>
                     <tbody>{Object.entries(report.totals[s]).map(([m, t]) => (
-                      <tr key={m}><td>{m}</td><td>{t.postsWithPeriodReadings ? `${num(t.periodActivity)} (${t.postsWithPeriodReadings} post)` : "—"}</td><td>{t.postsWithSnapshots ? `${num(t.latestSnapshotsSum)} (${t.postsWithSnapshots} post)` : "—"}</td></tr>
+                      <tr key={m}><td>{m}</td><td>{t.conflicts ? <span className="text-amber-300">unavailable: {t.conflicts} post(s) have overlapping or conflicting readings</span> : t.postsWithPeriodReadings ? `${num(t.periodActivity)} (${t.postsWithPeriodReadings} post)` : "—"}</td><td>{t.postsWithSnapshots ? `${num(t.latestSnapshotsSum)} (${t.postsWithSnapshots} post)` : "—"}</td></tr>
                     ))}</tbody>
                   </table>
                 </div>
@@ -185,8 +185,8 @@ export default function Measurement() {
                   <td className={SOURCE[s.source][1]}>{SOURCE[s.source][0]}</td>
                   <td>{s.asOfEnd ? <>{num(s.asOfEnd.value)} <span className="text-zinc-500">as of {fmt(s.asOfEnd.observedAt, report.period.timezone)}</span></> : "—"}{s.anomaly && <div className="text-amber-300">{s.anomaly}</div>}</td>
                   <td>{s.snapshotChange ? <>{s.snapshotChange.change >= 0 ? "+" : ""}{num(s.snapshotChange.change)} <span className="text-zinc-500">({fmt(s.snapshotChange.from.observedAt, report.period.timezone)} → {fmt(s.snapshotChange.to.observedAt, report.period.timezone)})</span></> : "—"}</td>
-                  <td>{s.periodActivity ? <>{num(s.periodActivity.value)} <span className={s.periodActivity.coveredFraction < 1 ? "text-amber-300" : "text-zinc-500"}>covers {Math.round(s.periodActivity.coveredFraction * 100)}% of the period</span></> : "—"}
-                    {s.excludedPartialReadings > 0 && <div className="text-zinc-500">{s.excludedPartialReadings} reading(s) crossing the period edge not counted</div>}</td>
+                  <td>{s.periodActivity?.conflict ? <span className="text-amber-300">not added: {s.periodActivity.conflict === "overlapping_readings" ? "readings cover overlapping windows" : "one window has different values"}</span> : s.periodActivity ? <>{num(s.periodActivity.value)} <span className={s.periodActivity.coveredFraction < 1 ? "text-amber-300" : "text-zinc-500"}>covers {Math.round(s.periodActivity.coveredFraction * 100)}% of the period</span></> : "—"}
+                    {(s.warnings || []).map((w) => <div key={w} className="text-zinc-500">{w}</div>)}</td>
                 </tr>
               ))}</tbody>
             </table>

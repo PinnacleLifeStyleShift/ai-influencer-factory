@@ -15,6 +15,15 @@ import { resolveLocal, isScheduleZone } from "../lib/zonedTime.js";
  *    other silently: activity comes only from period readings that lie fully
  *    inside the window, or from the change between two snapshots, shown with
  *    both timestamps.
+ *  - Period readings are selected by the activity interval they describe
+ *    (half-open, in the report's time zone), never by when they were read or
+ *    recorded: a day read off the platform a week later still counts for
+ *    that day. Cumulative snapshots keep snapshot-time selection.
+ *  - One window of one series (subject, platform, metric, source, interval)
+ *    has one effective value. Reading it again with the same value changes
+ *    nothing; a different value supersedes the earlier reading, which is kept
+ *    as history. Overlapping windows of one series are never added: the
+ *    activity is reported as a conflict instead of a wrong number.
  *  - Every report states its window, time zone, refresh time and what is not
  *    covered. Revenue is never attributed to posts or metrics.
  */
@@ -76,7 +85,13 @@ export async function recordObservation(prisma, input, { by, allowApi = false, n
     platform = input.platform;
   }
 
-  const key = [subjectType, subjectId, platform, metric, kind, source, observedAt.toISOString(), periodStart?.toISOString() || "", periodEnd?.toISOString() || ""].join("|");
+  const data = {
+    subjectType, subjectId, platform, metric, kind, value: BigInt(value), observedAt, periodStart, periodEnd,
+    source, sourceDetail: sourceDetail?.trim() || null, recordedBy: by,
+  };
+  if (kind === "period") return recordPeriodReading(prisma, data);
+
+  const key = [subjectType, subjectId, platform, metric, kind, source, observedAt.toISOString(), "", ""].join("|");
   const dedupeKey = crypto.createHash("sha256").update(key).digest("hex");
   const existing = await prisma.metricObservation.findUnique({ where: { dedupeKey } });
   if (existing) {
@@ -86,15 +101,65 @@ export async function recordObservation(prisma, input, { by, allowApi = false, n
     return { observation: existing, replayed: true };
   }
   try {
-    const observation = await prisma.metricObservation.create({ data: {
-      subjectType, subjectId, platform, metric, kind, value: BigInt(value), observedAt, periodStart, periodEnd,
-      source, sourceDetail: sourceDetail?.trim() || null, dedupeKey, recordedBy: by,
-    } });
-    return { observation, replayed: false };
+    return { observation: await prisma.metricObservation.create({ data: { ...data, dedupeKey } }), replayed: false };
   } catch (err) {
     if (err?.code === "P2002") return { observation: await prisma.metricObservation.findUnique({ where: { dedupeKey } }), replayed: true };
     throw err;
   }
+}
+
+/** The identity of one window of one measurement series (not when it was read). */
+export function intervalIdentity(o) {
+  return [o.subjectType, o.subjectId, o.platform, o.metric, o.source, new Date(o.periodStart).toISOString(), new Date(o.periodEnd).toISOString()].join("|");
+}
+
+/**
+ * One effective value per window. Serialised per window with a transaction
+ * advisory lock, so concurrent writers cannot both become effective.
+ */
+async function recordPeriodReading(prisma, data) {
+  const identity = intervalIdentity(data);
+  const sameWindow = { subjectType: data.subjectType, subjectId: data.subjectId, platform: data.platform, metric: data.metric, source: data.source, kind: "period", periodStart: data.periodStart, periodEnd: data.periodEnd };
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtextextended(${identity}, 0))`;
+    const effective = await tx.metricObservation.findMany({ where: { ...sameWindow, retractedAt: null, supersededAt: null }, orderBy: { recordedAt: "asc" } });
+    const same = effective.find((o) => o.value === data.value);
+    if (same && effective.length === 1) return { observation: same, replayed: true };
+    // A new reading of the window: kept, and the effective one(s) it corrects
+    // are marked superseded (legacy duplicates included), never deleted.
+    const dedupeKey = crypto.createHash("sha256").update(`${identity}|${data.observedAt.toISOString()}|${data.value}|${crypto.randomUUID()}`).digest("hex");
+    const observation = await tx.metricObservation.create({ data: { ...data, dedupeKey } });
+    if (effective.length) {
+      await tx.metricObservation.updateMany({ where: { id: { in: effective.map((o) => o.id) } }, data: { supersededAt: new Date(), supersededById: observation.id } });
+    }
+    return { observation, replayed: false, supersedes: effective.length === 1 ? effective[0].id : effective.length ? effective.map((o) => o.id) : null };
+  });
+}
+
+/**
+ * Dry run over existing period readings: windows of one series with more than
+ * one effective reading (possible only for rows stored before one-value-per-
+ * window). Reads only; changes and deletes nothing.
+ */
+export async function classifyLegacyPeriodReadings(prisma) {
+  const rows = await prisma.metricObservation.findMany({ where: { kind: "period", retractedAt: null, supersededAt: null }, orderBy: { recordedAt: "asc" } });
+  const byWindow = new Map();
+  for (const o of rows) {
+    const k = intervalIdentity(o);
+    if (!byWindow.has(k)) byWindow.set(k, []);
+    byWindow.get(k).push(o);
+  }
+  const groups = [...byWindow.values()].filter((l) => l.length > 1).map((l) => {
+    const distinct = new Set(l.map((o) => String(o.value))).size;
+    return {
+      subjectType: l[0].subjectType, subjectId: l[0].subjectId, platform: l[0].platform, metric: l[0].metric, source: l[0].source,
+      periodStart: l[0].periodStart.toISOString(), periodEnd: l[0].periodEnd.toISOString(),
+      readings: l.length, distinctValues: distinct, observationIds: l.map((o) => o.id),
+      classification: distinct === 1 ? "identical_repeats" : "conflicting_values",
+      effect: distinct === 1 ? "counted once in reports" : "activity for this window is reported as a conflict until a corrected reading is recorded",
+    };
+  });
+  return { dryRun: true, periodReadings: rows.length, groups };
 }
 
 /** Midnight at the start of a local date, as a UTC instant (DST-safe). */
@@ -135,13 +200,55 @@ function coverage(intervals, start, end) {
 }
 
 /**
+ * Activity from the effective period readings fully inside [start,end).
+ * Repeats of one window count once; one window with differing values, or
+ * windows that overlap each other, make the value unavailable (a conflict)
+ * rather than a sum. Coverage is computed from the same set that is counted.
+ */
+function periodActivityOf(inside, start, end) {
+  const warnings = [];
+  if (!inside.length) return { result: null, warnings };
+  const byWindow = new Map();
+  for (const o of inside) {
+    const k = `${o.periodStart.getTime()}|${o.periodEnd.getTime()}`;
+    if (!byWindow.has(k)) byWindow.set(k, []);
+    byWindow.get(k).push(o);
+  }
+  const windows = [...byWindow.values()].map((l) => ({ start: l[0].periodStart.getTime(), end: l[0].periodEnd.getTime(), values: [...new Set(l.map((o) => Number(o.value)))], readings: l.length }))
+    .sort((a, b) => a.start - b.start || a.end - b.end);
+  const repeated = windows.filter((x) => x.readings > 1 && x.values.length === 1).length;
+  if (repeated) warnings.push(`${repeated} window(s) have a repeated reading (stored before one value per window); counted once`);
+  const cov = coverage(windows.map((x) => [x.start, x.end]), start, end);
+  const base = { readings: windows.length, coveredFraction: cov.fraction, gaps: cov.gaps };
+  const iso = (t) => new Date(t).toISOString();
+  const differing = windows.filter((x) => x.values.length > 1);
+  if (differing.length) {
+    warnings.push("one window has different values; record a corrected reading to resolve it");
+    return { result: { ...base, value: null, conflict: "conflicting_values_for_one_window", windows: differing.map((x) => ({ start: iso(x.start), end: iso(x.end), values: x.values })) }, warnings };
+  }
+  const overlaps = [];
+  let reach = null;
+  for (const x of windows) {
+    if (reach && x.start < reach.end) overlaps.push({ first: { start: iso(reach.start), end: iso(reach.end) }, second: { start: iso(x.start), end: iso(x.end) } });
+    if (!reach || x.end > reach.end) reach = x;
+  }
+  if (overlaps.length) {
+    warnings.push("readings of this series cover overlapping windows (e.g. a day and the week containing it); they are not added");
+    return { result: { ...base, value: null, conflict: "overlapping_readings", overlaps }, warnings };
+  }
+  return { result: { ...base, value: windows.reduce((n, x) => n + x.values[0], 0) }, warnings };
+}
+
+/**
  * Period report. Per subject, metric and SOURCE (never mixed):
  *  - asOfEnd: latest cumulative reading at or before the window end
  *  - snapshotChange: change between the first and last cumulative readings
  *    inside the window (with both times), when there are two
- *  - periodActivity: sum of period readings fully inside the window, with
- *    the share of the window they cover and the gaps; partly overlapping
- *    readings are counted as excluded (they cannot be split honestly)
+ *  - periodActivity: sum of the effective period readings whose activity
+ *    interval lies fully inside the window, with the share of the window
+ *    they cover and the gaps, or a conflict when windows overlap; partly
+ *    overlapping readings are counted as excluded (they cannot be split
+ *    honestly) and named in warnings
  */
 export async function buildReport(prisma, { from, to, timezone, platform, characterId, includeFixtures = false, now = new Date() }) {
   const w = reportWindow({ from, to, timezone });
@@ -161,10 +268,18 @@ export async function buildReport(prisma, { from, to, timezone, platform, charac
 
   const obs = await prisma.metricObservation.findMany({
     where: {
-      retractedAt: null, source: { in: sources }, observedAt: { lt: w.endUtc },
-      OR: [
-        { subjectType: "post", subjectId: { in: posts.map((p) => p.id) } },
-        { subjectType: "account", ...(characterId ? { subjectId: characterId } : {}) },
+      retractedAt: null, supersededAt: null, source: { in: sources },
+      AND: [
+        { OR: [
+          { subjectType: "post", subjectId: { in: posts.map((p) => p.id) } },
+          { subjectType: "account", ...(characterId ? { subjectId: characterId } : {}) },
+        ] },
+        // Snapshots by when they were taken; period readings by the activity
+        // interval they describe (overlapping the window at all).
+        { OR: [
+          { kind: "cumulative", observedAt: { lt: w.endUtc } },
+          { kind: "period", periodStart: { lt: w.endUtc }, periodEnd: { gt: w.startUtc } },
+        ] },
       ],
       ...(platform ? { platform } : {}),
     },
@@ -184,16 +299,19 @@ export async function buildReport(prisma, { from, to, timezone, platform, charac
     const inWin = cum.filter((o) => o.observedAt.getTime() >= start);
     const per = list.filter((o) => o.kind === "period");
     const inside = per.filter((o) => o.periodStart.getTime() >= start && o.periodEnd.getTime() <= end);
-    const partial = per.filter((o) => o.periodEnd.getTime() > start && o.periodStart.getTime() < end && !inside.includes(o));
-    const cov = inside.length ? coverage(inside.map((o) => [o.periodStart.getTime(), o.periodEnd.getTime()]), start, end) : null;
+    const partial = per.filter((o) => !inside.includes(o));
+    const activity = periodActivityOf(inside, start, end);
     const decreased = cum.some((o, i) => i > 0 && o.value < cum[i - 1].value);
+    const warnings = [...activity.warnings];
+    if (partial.length) warnings.push(`${partial.length} reading(s) partly overlap the period and are not prorated; activity covers only readings fully inside it`);
     return {
       subjectType, subjectId, platform: plat, metric, source,
       asOfEnd: last ? { value: Number(last.value), observedAt: last.observedAt.toISOString() } : null,
       snapshotChange: inWin.length >= 2
         ? { from: { value: Number(inWin[0].value), observedAt: inWin[0].observedAt.toISOString() }, to: { value: Number(inWin.at(-1).value), observedAt: inWin.at(-1).observedAt.toISOString() }, change: Number(inWin.at(-1).value - inWin[0].value) }
         : null,
-      periodActivity: inside.length ? { value: inside.reduce((n, o) => n + Number(o.value), 0), readings: inside.length, coveredFraction: cov.fraction, gaps: cov.gaps } : null,
+      periodActivity: activity.result,
+      warnings,
       excludedPartialReadings: partial.length,
       ...(decreased ? { anomaly: "a cumulative counter went down between readings" } : {}),
       ...(source === "fixture" ? { fixture: true } : {}),
@@ -204,8 +322,9 @@ export async function buildReport(prisma, { from, to, timezone, platform, charac
   // Totals per source and metric (never across sources).
   const totals = {};
   for (const s of series.filter((x) => x.subjectType === "post")) {
-    const t = (totals[s.source] ||= {})[s.metric] ||= { periodActivity: 0, postsWithPeriodReadings: 0, latestSnapshotsSum: 0, postsWithSnapshots: 0 };
-    if (s.periodActivity) { t.periodActivity += s.periodActivity.value; t.postsWithPeriodReadings++; }
+    const t = (totals[s.source] ||= {})[s.metric] ||= { periodActivity: 0, postsWithPeriodReadings: 0, conflicts: 0, latestSnapshotsSum: 0, postsWithSnapshots: 0 };
+    if (s.periodActivity?.conflict) { t.conflicts++; t.periodActivity = null; }
+    else if (s.periodActivity) { if (t.periodActivity !== null) t.periodActivity += s.periodActivity.value; t.postsWithPeriodReadings++; }
     if (s.asOfEnd) { t.latestSnapshotsSum += s.asOfEnd.value; t.postsWithSnapshots++; }
   }
   const measured = new Set(series.filter((s) => s.subjectType === "post" && s.source !== "fixture").map((s) => s.subjectId));
@@ -230,7 +349,8 @@ export async function buildReport(prisma, { from, to, timezone, platform, charac
     },
     notes: [
       "Numbers from different sources are never added together.",
-      "Cumulative counters are shown as of their reading time; period activity counts only readings fully inside the period.",
+      "Cumulative counters are shown as of their reading time; period activity counts only readings whose activity interval lies fully inside the period, whenever they were read.",
+      "Overlapping readings of one series are never added; such activity, and any total it belongs to, is shown as a conflict.",
       "Revenue is not attributed to posts or metrics; campaign money is tracked separately (planned, invoiced, received).",
     ],
   };

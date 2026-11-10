@@ -32,8 +32,8 @@ export function metricsRoutes({ providers, env }) {
   }));
 
   router.post("/observations", ["edit"], handle("POST /metrics/observations", async (req, res) => {
-    const { observation, replayed } = await recordObservation(req.prisma, req.body, { by: by(req) });
-    res.status(replayed ? 200 : 201).json({ replayed, observation: plain(observation) });
+    const { observation, replayed, supersedes = null } = await recordObservation(req.prisma, req.body, { by: by(req) });
+    res.status(replayed ? 200 : 201).json({ replayed, supersedes, observation: plain(observation) });
   }));
 
   router.post("/observations/:id/retract", ["edit"], handle("POST /metrics/observations/:id/retract", async (req, res) => {
