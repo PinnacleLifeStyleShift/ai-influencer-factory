@@ -1,10 +1,10 @@
-import { Router } from "express";
+import { secureRouter } from "../lib/secureRouter.js";
 import { ApiError, routeError } from "../lib/errors.js";
 import { recordRights, approveRights, clearanceFor } from "../services/rights.js";
 import { USES } from "../services/rights.js";
 
 /** Rights records for character images (see services/rights.js). */
-const router = Router();
+const router = secureRouter();
 
 // GET /api/character-images/:imageId/rights — history (newest first) and clearance per use
 router.get("/:imageId/rights", async (req, res) => {
@@ -20,7 +20,7 @@ router.get("/:imageId/rights", async (req, res) => {
 });
 
 // POST /api/character-images/:imageId/rights — append a rights record (needs owner approval to take effect)
-router.post("/:imageId/rights", async (req, res) => {
+router.post("/:imageId/rights", ["references"], async (req, res) => {
   try {
     const record = await recordRights(req.prisma, req.params.imageId, req.body, { by: req.principal.id });
     res.status(201).json(record);
@@ -30,7 +30,7 @@ router.post("/:imageId/rights", async (req, res) => {
 });
 
 // POST /api/character-images/:imageId/rights/approve { recordId } — owner approval of the newest record
-router.post("/:imageId/rights/approve", async (req, res) => {
+router.post("/:imageId/rights/approve", ["admin"], async (req, res) => {
   try {
     const recordId = req.body?.recordId;
     if (typeof recordId !== "string") throw new ApiError("VALIDATION_FAILED", 400, "recordId of the reviewed record is required");

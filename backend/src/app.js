@@ -15,7 +15,8 @@ import { generationJobRoutes } from "./routes/generationJobs.js";
 
 import { buildCorsOptions } from "./lib/cors.js";
 import { sendError, ApiError, routeError } from "./lib/errors.js";
-import { requireAuthConfigured, requireSession, authorize } from "./middleware/auth.js";
+import { requireAuthConfigured, requireSession } from "./middleware/auth.js";
+import { allow } from "./auth/permissions.js";
 import { requestId } from "./middleware/requestId.js";
 import { createOwnerTokenProvider } from "./auth/providers.js";
 import { createSessionStore } from "./auth/sessions.js";
@@ -63,9 +64,16 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
 
   const app = express();
   app.disable("x-powered-by");
+  // One URL per operation: "/GENERATE-IMAGE" or "/generate-image/" match no
+  // route (404) instead of reaching a handler under a different rule.
+  app.set("case sensitive routing", true);
+  app.set("strict routing", true);
   if (env.TRUST_PROXY) app.set("trust proxy", Number(env.TRUST_PROXY) || 1);
 
   app.use(requestId());
+  // One URL per operation: a repeated separator ("//") is not normalised
+  // into a route, it is refused.
+  app.use((req, res, next) => (req.path.includes("//") ? sendError(res, new ApiError("NOT_FOUND", 404, "Not found")) : next()));
   app.use(helmet());
   app.use(cors(buildCorsOptions(env)));
   if (logRequests) app.use(morgan(":method :url :status :res[content-length] - :response-time ms id=:res[x-request-id]"));
@@ -82,7 +90,7 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
   });
 
   // Everything under /api requires a session, except creating one.
-  const api = express.Router();
+  const api = express.Router({ caseSensitive: true, strict: true });
   api.use(rateLimit({ windowMs: 60_000, max: Number(env.API_RATE_LIMIT_PER_MIN) || 300 }));
   api.use(requireAuthConfigured(env));
   // Before authentication so refused attempts are recorded as well.
@@ -95,7 +103,7 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
     createSessionHandler({ env, provider, sessions: sessionStore })
   );
   api.use(requireSession({ env, sessions: sessionStore }));
-  api.use(authorize());
+  // Authorization is declared on each route (secureRouter / allow), not here.
   api.use((req, _res, next) => {
     req.prisma = prisma;
     req.generationGate = generationGate;
@@ -109,14 +117,14 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
     max: Number(env.GENERATION_RATE_LIMIT_PER_MIN) || 10,
     keyFn: (req) => `gen:${req.ip}`,
   });
-  api.post(
-    ["/characters/:id/generate-image", "/characters/:id/generate-video", "/pipeline/generate-content"],
-    generationLimiter
-  );
+  // Middleware, not a route: it applies to the canonical generation URLs (the
+  // only ones that reach a handler under strict, case-sensitive routing).
+  const GENERATION_PATHS = /^\/(characters\/[^/]+\/generate-(image|video)|pipeline\/generate-content)$/;
+  api.use((req, res, next) => (req.method === "POST" && GENERATION_PATHS.test(req.path) ? generationLimiter(req, res, next) : next()));
 
   // Audit trail (admin only via the permission table). Newest first; page
   // with ?before=<ISO time>; filter with ?targetId=.
-  api.get("/audit-events", async (req, res, next) => {
+  api.get("/audit-events", allow(["admin"]), async (req, res, next) => {
     try {
       const where = {};
       if (typeof req.query.targetId === "string") where.targetId = req.query.targetId;
@@ -131,8 +139,8 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
 
   // Read-only view of what the spending gate would allow (no secrets).
   // Configuration audit by setting NAME only (admin via the permission table).
-  api.get("/system/config-check", (_req, res) => res.json({ findings: configFindings(env) }));
-  api.get("/system/generation-policy", (req, res) => res.json(req.generationGate.describe()));
+  api.get("/system/config-check", allow(["admin"]), (_req, res) => res.json({ findings: configFindings(env) }));
+  api.get("/system/generation-policy", allow(["admin"]), (req, res) => res.json(req.generationGate.describe()));
 
   api.use("/auth", authRoutes({ sessions: sessionStore }));
   api.use("/characters", characterRoutes);
@@ -159,6 +167,10 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
     }
     if (err?.type === "entity.parse.failed") {
       return sendError(res, new ApiError("VALIDATION_FAILED", 400, "Malformed JSON body"));
+    }
+    // A malformed %-escape in the path (Express raises URIError, status 400).
+    if (err instanceof URIError || (err?.status === 400 && /decode/i.test(err?.message || ""))) {
+      return sendError(res, new ApiError("MALFORMED_URL", 400, "Malformed URL"));
     }
     return routeError(res, err, "Internal server error", "unhandled");
   });

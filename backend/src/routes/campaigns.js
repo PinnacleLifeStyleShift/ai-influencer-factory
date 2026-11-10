@@ -1,8 +1,8 @@
 import { validateBody, listLimit, SCHEMAS } from "../lib/validate.js";
 import { recordInvoice, voidInvoice, recordReceipt, reverseReceipt, campaignMoney } from "../services/campaignMoney.js";
 import { ApiError, sendError, routeError } from "../lib/errors.js";
-import { Router } from "express";
-const router = Router();
+import { secureRouter } from "../lib/secureRouter.js";
+const router = secureRouter();
 
 // GET /api/campaigns — list all with submissions
 router.get("/", async (req, res) => {
@@ -51,7 +51,7 @@ router.get("/:id", async (req, res) => {
 });
 
 // POST /api/campaigns — create
-router.post("/", async (req, res) => {
+router.post("/", ["edit"], async (req, res) => {
   try {
     validateBody(req.body, SCHEMAS.campaign);
     const campaign = await req.prisma.campaign.create({
@@ -73,7 +73,7 @@ router.post("/", async (req, res) => {
 });
 
 // PUT /api/campaigns/:id — update
-router.put("/:id", async (req, res) => {
+router.put("/:id", ["edit"], async (req, res) => {
   try {
     validateBody(req.body, SCHEMAS.campaign, { partial: true });
     const data = {};
@@ -104,7 +104,7 @@ router.put("/:id", async (req, res) => {
 });
 
 // DELETE /api/campaigns/:id
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", ["edit"], async (req, res) => {
   try {
     // Invoices and receipts are financial records: a campaign that has them is kept.
     const records = await req.prisma.campaignInvoice.count({ where: { campaignId: req.params.id } }) + await req.prisma.campaignReceipt.count({ where: { campaignId: req.params.id } });
@@ -120,7 +120,7 @@ router.delete("/:id", async (req, res) => {
 // WHY: promoting a brand needs a real, authorized relationship and a paid-
 // promotion disclosure. A campaign without one cannot take submissions.
 const DISCLOSURE_RE = /(#ad\b|#sponsored\b|paid partnership|paid promotion|sponsored by|#partner\b)/i;
-router.post("/:id/sponsor-authorization", async (req, res) => {
+router.post("/:id/sponsor-authorization", ["admin"], async (req, res) => {
   try {
     const { sponsorLegalName, agreementReference, authorizedAt, disclosure } = req.body || {};
     const fields = {};
@@ -149,17 +149,17 @@ const moneyRoute = (label, fn) => async (req, res) => {
   try { await fn(req, res); } catch (err) { return routeError(res, err, `Failed: ${label}`, label); }
 };
 router.get("/:id/money", moneyRoute("GET /campaigns/:id/money", async (req, res) => res.json(await campaignMoney(req.prisma, req.params.id))));
-router.post("/:id/invoices", moneyRoute("POST /campaigns/:id/invoices", async (req, res) =>
+router.post("/:id/invoices", ["admin"], moneyRoute("POST /campaigns/:id/invoices", async (req, res) =>
   res.status(201).json(plainMoney(await recordInvoice(req.prisma, req.params.id, req.body, { by: by(req) })))));
-router.post("/:id/invoices/:invoiceId/void", moneyRoute("POST /campaigns/:id/invoices/:invoiceId/void", async (req, res) =>
+router.post("/:id/invoices/:invoiceId/void", ["admin"], moneyRoute("POST /campaigns/:id/invoices/:invoiceId/void", async (req, res) =>
   res.json(plainMoney(await voidInvoice(req.prisma, req.params.id, req.params.invoiceId, req.body?.reason, { by: by(req) })))));
-router.post("/:id/receipts", moneyRoute("POST /campaigns/:id/receipts", async (req, res) =>
+router.post("/:id/receipts", ["admin"], moneyRoute("POST /campaigns/:id/receipts", async (req, res) =>
   res.status(201).json(plainMoney(await recordReceipt(req.prisma, req.params.id, req.body, { by: by(req) })))));
-router.post("/:id/receipts/:receiptId/reverse", moneyRoute("POST /campaigns/:id/receipts/:receiptId/reverse", async (req, res) =>
+router.post("/:id/receipts/:receiptId/reverse", ["admin"], moneyRoute("POST /campaigns/:id/receipts/:receiptId/reverse", async (req, res) =>
   res.json(plainMoney(await reverseReceipt(req.prisma, req.params.id, req.params.receiptId, req.body?.reason, { by: by(req) })))));
 
 // POST /api/campaigns/:id/submissions — submit character to campaign
-router.post("/:id/submissions", async (req, res) => {
+router.post("/:id/submissions", ["edit"], async (req, res) => {
   try {
     validateBody(req.body, SCHEMAS.submission);
     const campaign = await req.prisma.campaign.findUnique({ where: { id: req.params.id } });

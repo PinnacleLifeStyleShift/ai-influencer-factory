@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { secureRouter } from "../lib/secureRouter.js";
 import { ApiError, sendError, routeError } from "../lib/errors.js";
 import { validateBody, listLimit, SCHEMAS } from "../lib/validate.js";
 import { readIdempotencyKey, isUniqueViolation } from "../lib/requests.js";
@@ -50,7 +50,7 @@ function assertSafeReference(body) {
 import { requestHash } from "../services/spendLedger.js";
 import { buildPromptFromCharacter } from "../services/imageGeneration.js";
 
-const router = Router();
+const router = secureRouter();
 
 // Arbitrary constant for a transaction-scoped advisory lock that serialises
 // character-ID allocation across concurrent requests and processes.
@@ -132,7 +132,7 @@ router.get("/:id", async (req, res) => {
 });
 
 // POST /api/characters — create
-router.post("/", async (req, res) => {
+router.post("/", ["edit"], async (req, res) => {
   try {
     validateBody(req.body, SCHEMAS.character);
     assertSafeReference(req.body);
@@ -178,7 +178,7 @@ router.post("/", async (req, res) => {
 });
 
 // PUT /api/characters/:id — update
-router.put("/:id", async (req, res) => {
+router.put("/:id", ["edit"], async (req, res) => {
   try {
     validateBody(req.body, SCHEMAS.character, { partial: true });
     assertSafeReference(req.body);
@@ -233,7 +233,7 @@ router.put("/:id", async (req, res) => {
 });
 
 // DELETE /api/characters/:id
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", ["edit"], async (req, res) => {
   try {
     await req.prisma.character.delete({ where: { id: req.params.id } });
     res.json({ success: true });
@@ -248,7 +248,7 @@ router.delete("/:id", async (req, res) => {
  * reference image is never changed here; promote a candidate explicitly with
  * POST /api/characters/:id/reference-image.
  */
-router.post("/:id/generate-image", async (req, res) => {
+router.post("/:id/generate-image", ["generate", "spend"], async (req, res) => {
   try {
     const character = await req.prisma.character.findUnique({ where: { id: req.params.id } });
     if (!character) throw notFound();
@@ -347,7 +347,7 @@ router.get("/:id/images", async (req, res) => {
  * existing reference requires replaceReference: true; the previous reference
  * is kept in history as "replaced_reference", never lost.
  */
-router.post("/:id/reference-image", async (req, res) => {
+router.post("/:id/reference-image", ["references"], async (req, res) => {
   try {
     const { imageId, replaceReference } = req.body || {};
     if (!imageId || typeof imageId !== "string") {
@@ -395,7 +395,7 @@ router.post("/:id/reference-image", async (req, res) => {
 });
 
 // POST /api/characters/:id/images { imageUrl } — register an existing image as a candidate
-router.post("/:id/images", async (req, res) => {
+router.post("/:id/images", ["references"], async (req, res) => {
   try {
     const character = await req.prisma.character.findUnique({ where: { id: req.params.id } });
     if (!character) throw notFound();
@@ -445,7 +445,7 @@ router.get("/:id/versions/:version", async (req, res) => {
 });
 
 // POST /api/characters/:id/versions { note? } — publish the current draft (immutable)
-router.post("/:id/versions", async (req, res) => {
+router.post("/:id/versions", ["edit"], async (req, res) => {
   try {
     const note = req.body?.note;
     if (note !== undefined && (typeof note !== "string" || note.length > 500)) {
@@ -459,7 +459,7 @@ router.post("/:id/versions", async (req, res) => {
 });
 
 // POST /api/characters/:id/versions/:version/restore — copy a version into the draft
-router.post("/:id/versions/:version/restore", async (req, res) => {
+router.post("/:id/versions/:version/restore", ["edit"], async (req, res) => {
   try {
     const n = Number(req.params.version);
     if (!Number.isInteger(n) || n < 1) throw new ApiError("VALIDATION_FAILED", 400, "version must be a positive whole number");
@@ -471,7 +471,7 @@ router.post("/:id/versions/:version/restore", async (req, res) => {
 });
 
 // POST /api/characters/:id/generate-video — through the injected generation gate
-router.post("/:id/generate-video", async (req, res) => {
+router.post("/:id/generate-video", ["generate", "spend"], async (req, res) => {
   try {
     const character = await req.prisma.character.findUnique({ where: { id: req.params.id } });
     if (!character) return sendError(res, new ApiError("NOT_FOUND", 404, "Character not found"));

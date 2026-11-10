@@ -1,11 +1,11 @@
-import { Router } from "express";
+import { secureRouter } from "../lib/secureRouter.js";
 import { ApiError, routeError } from "../lib/errors.js";
 import { recordObservation, buildReport, METRICS } from "../services/metrics.js";
 import { refreshFromProviders } from "../services/metricsProviders.js";
 
 /** Measurement routes. Recording readings needs "edit"; refreshing from a provider is the owner's. */
 export function metricsRoutes({ providers, env }) {
-  const router = Router();
+  const router = secureRouter();
   const handle = (label, fn) => async (req, res) => {
     try { await fn(req, res); } catch (err) { return routeError(res, err, `Failed: ${label}`, label); }
   };
@@ -31,12 +31,12 @@ export function metricsRoutes({ providers, env }) {
     res.json(rows.map(plain));
   }));
 
-  router.post("/observations", handle("POST /metrics/observations", async (req, res) => {
+  router.post("/observations", ["edit"], handle("POST /metrics/observations", async (req, res) => {
     const { observation, replayed } = await recordObservation(req.prisma, req.body, { by: by(req) });
     res.status(replayed ? 200 : 201).json({ replayed, observation: plain(observation) });
   }));
 
-  router.post("/observations/:id/retract", handle("POST /metrics/observations/:id/retract", async (req, res) => {
+  router.post("/observations/:id/retract", ["edit"], handle("POST /metrics/observations/:id/retract", async (req, res) => {
     const reason = req.body?.reason;
     if (typeof reason !== "string" || reason.trim().length < 3 || reason.length > 500) throw new ApiError("VALIDATION_FAILED", 400, "reason is required (3-500 characters)");
     // The key is released so the corrected value can be recorded for the same reading.
@@ -62,7 +62,7 @@ export function metricsRoutes({ providers, env }) {
     }));
   }));
 
-  router.post("/refresh", handle("POST /metrics/refresh", async (req, res) => {
+  router.post("/refresh", ["admin"], handle("POST /metrics/refresh", async (req, res) => {
     res.json({ refreshed: await refreshFromProviders(req.prisma, providers, env, { by: by(req) }) });
   }));
 

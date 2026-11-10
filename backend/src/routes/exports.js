@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { secureRouter } from "../lib/secureRouter.js";
 import { ApiError, routeError } from "../lib/errors.js";
 import { snapshotHash } from "../lib/revision.js";
 import { isUniqueViolation } from "../lib/requests.js";
@@ -11,14 +11,14 @@ import { invalidatingChange } from "../lib/revision.js";
  * Export of approved content, and measuring stored media.
  * Export only packages files for download; it never posts or contacts anyone.
  */
-const router = Router();
+const router = secureRouter();
 const handle = (label, fn) => async (req, res) => {
   try { await fn(req, res); } catch (err) { return routeError(res, err, `Failed: ${label}`, label); }
 };
 const notFound = () => new ApiError("NOT_FOUND", 404, "Pipeline item not found");
 
 // POST /api/pipeline/:id/exports  -> { export, replayed }
-router.post("/:id/exports", handle("POST /pipeline/:id/exports", async (req, res) => {
+router.post("/:id/exports", ["export"], handle("POST /pipeline/:id/exports", async (req, res) => {
   const prisma = req.prisma;
   const item = await prisma.pipelineItem.findUnique({ where: { id: req.params.id } });
   if (!item) throw notFound();
@@ -87,7 +87,7 @@ router.get("/:id/exports/:exportId/download", handle("GET /pipeline/:id/exports/
 // Replaces each shot clip's recorded length with the length measured from the
 // file itself (durationSource "measured"). This is a change to the package,
 // so it clears approval like any other.
-router.post("/:id/measure-media", handle("POST /pipeline/:id/measure-media", async (req, res) => {
+router.post("/:id/measure-media", ["edit"], handle("POST /pipeline/:id/measure-media", async (req, res) => {
   const prisma = req.prisma;
   const item = await prisma.pipelineItem.findUnique({ where: { id: req.params.id } });
   if (!item) throw notFound();
