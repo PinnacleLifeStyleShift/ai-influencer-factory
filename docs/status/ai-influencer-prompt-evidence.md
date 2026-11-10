@@ -1,16 +1,16 @@
 # Evidence packet: AI Influencer project prompt (10 November 2026)
 
-This is the response to the owner's AI Influencer project prompt and the implementation specification of 10 November. **Base:** PR #9 head `fb53e4c`. **Final:** the head of PR #14 (`pkg-m-operations`; the exact SHA is in the PR).
+This is the response to the owner's AI Influencer project prompt and the implementation specification of 10 November. **Base:** PR #9 head `fb53e4c`. **Final:** `main` at `2851948` (PRs #1–#16 merged on 10 November 2026).
 
 Statuses are kept separate, as the prompt requires:
 
 - **Code present.**
 - **Locally tested.**
 - **Hosted CI:** green at the exact head.
-- **Deployed:** none. Production still runs `277d2d3`.
+- **Deployed:** `2851948` on both Railway services (api and frontend), 10 November 2026. Production database migrated (all 16 migrations applied). **The API refuses every request until the owner sets `OWNER_API_TOKEN`.**
 - **Accepted by the intended user:** none yet.
 
-## PRs added for this prompt (stacked, drafts, unmerged)
+## PRs added for this prompt (all merged into `main`)
 
 | PR | Branch | Package | Locally tested | Hosted CI |
 | --- | --- | --- | --- | --- |
@@ -19,7 +19,8 @@ Statuses are kept separate, as the prompt requires:
 | [#12](https://github.com/PinnacleLifeStyleShift/ai-influencer-factory/pull/12) | `pkg-k-rights-revocation` | 2: revocation holds, pre-submit rights recheck, shot-plan edges | 194/194 (isolated worktree) | Green `90f70fc` |
 | [#13](https://github.com/PinnacleLifeStyleShift/ai-influencer-factory/pull/13) | `pkg-l-media-assembly` | 4: AssetVersion, deterministic assembly | 199/199 + 8 browser checks (isolated) | Green `8036d58`; **5 assembly tests skipped there (no ffmpeg)**; ffmpeg added to CI in #14 |
 | [#14](https://github.com/PinnacleLifeStyleShift/ai-influencer-factory/pull/14) | `pkg-m-operations` | Operations, kill switch, redaction, migration gates | Browser checks 8/8 (isolated); backend fix for 3 unit tests included | Green `aa55c64`: 206/206, 0 skipped |
-| #15 | `pkg-n-strict-contracts` | Unknown-field refusal, export request contract, export integrity, retention policy | See PR | See PR |
+| [#15](https://github.com/PinnacleLifeStyleShift/ai-influencer-factory/pull/15) | `pkg-n-strict-contracts` | Unknown-field refusal, export request contract, export integrity, retention policy | 210/210 | Green `8bc5fe6`: 210/210, 0 skipped |
+| [#16](https://github.com/PinnacleLifeStyleShift/ai-influencer-factory/pull/16) | `fix-migrate-empty-history` | Fix for the first production migration (see below) | Migration tests 10/10 | Green `0d8ca61` |
 
 ## Story and acceptance matrix
 
@@ -71,6 +72,22 @@ Statuses are kept separate, as the prompt requires:
 - **Rehearsed cases:** a fresh database, a populated 277d2d3 baseline, the full stacked sequence, repeated invocation, deliberate drift, **a partially applied migration with recovery**, and **an older secure revision against the newest schema**.
 - **Restore:** a backup → restore drill with row-count and migration verification, including refusals (the production target, a non-empty target, a tampered dump, missing rows).
 
+## First production deploy (DEPLOYED)
+
+1. **Merging #1–#15 deployed `5928246`. The API deploy failed at the migration step.** The production database already had an empty `_prisma_migrations` table, so the migration script skipped its baseline check. The baseline migration then hit `relation "characters" already exists` on its first statement. Nothing changed except one failed bookkeeping row, and the `277d2d3` API kept serving.
+2. **#16 fixed the detection and deployed `2851948`:**
+   - schema verified identical to the 277d2d3 baseline;
+   - failed attempt marked rolled back;
+   - baseline recorded as applied;
+   - 15 migrations applied (`[migrate] Done.`);
+   - `/ready` healthcheck passed.
+3. **Startup configuration log:**
+   - `OWNER_API_TOKEN` not set (ERROR: every `/api` route refuses requests);
+   - `LIVE_PROVIDER_CALLS` and `LIVE_PUBLISHING` disabled;
+   - media store and media assembly not configured;
+   - retention unset (nothing deleted).
+4. **Not yet observed in production:** an unauthenticated request being refused. This session cannot reach the Railway hosts, and no traffic had arrived yet.
+
 ## Captures (synthetic data)
 
 Desktop and phone captures are in `docs/screenshots/`. New in this round: `pkg-m-operations.png`. The review/export screen has both a desktop and a 390 px phone capture.
@@ -80,11 +97,14 @@ Desktop and phone captures are in `docs/screenshots/`. New in this round: `pkg-m
 ## Not run / remaining holds
 
 - **Not run:** anything against production or live providers; browser video playback (Chromium has no H.264); signed-link expiry (no signed links exist).
-- **Release holds (owner actions):**
-  1. **Railway prep before merging:** backup and restore drill, preflight, `OWNER_API_TOKEN`, `FRONTEND_URL`, `TRUST_PROXY`.
-  2. **Merge order:** PRs #1–#14 in one sitting, because the authorization fix (#10) is on top of the stack. Alternatively, ask for it to be backported into #2.
-  3. **Private media storage:** approval and its retention policy.
-  4. **ffmpeg in production:** whether the API image should include it.
-  5. **Paid generation:** provider/model approval, prices, caps.
-  6. **Login provider, publishing accounts, analytics access.**
-- **Next safe action:** the owner completes runbook section 1 (backup, drill, preflight, variables). Then merging #1–#14 in order deploys the authenticated build, with everything paid or outbound still off.
+- **Remaining owner actions:**
+  1. **`OWNER_API_TOKEN`:** set it on the api service (at least 32 random characters). Until then the API refuses all requests.
+  2. **Private media storage:** approval and its retention policy.
+  3. **ffmpeg in production:** whether the API image should include it.
+  4. **Paid generation:** provider/model approval, prices, caps.
+  5. **Login provider, publishing accounts, analytics access.**
+  6. **Provider keys:** the api service still holds keys from the old build. The owner chose to keep them; they are unused while `LIVE_PROVIDER_CALLS` is unset.
+- **Next safe action:**
+  1. The owner sets `OWNER_API_TOKEN`.
+  2. Then check that `/api/characters` without a session returns 401, and that signing in with the token works.
+  3. Then run the synthetic export workflow on the released revision.

@@ -4,7 +4,9 @@
 
 Recorded 2026-11-10 for the completion brief v1.0 (9 November 2026). Evidence labels are as in `current-baseline.md`: VERIFIED SOURCE, TESTED LOCALLY, HOSTED CI, DEPLOYED, LIVE-VERIFIED. No secret values appear here.
 
-**Bottom line:** every package in the brief is built and tested with mocks, synthetic media and throwaway databases. **Nothing is merged or deployed yet**, so nothing is LIVE-VERIFIED. Production still runs `277d2d3`, which has no authentication.
+**Bottom line:** every package in the brief is built and tested with mocks, synthetic media and throwaway databases.
+
+> **Update, 10 November 2026:** PRs #1–#16 are merged and `2851948` is DEPLOYED on both services. The production database is migrated. The API refuses all requests until the owner sets `OWNER_API_TOKEN`. See `ai-influencer-prompt-evidence.md`. Nothing is LIVE-VERIFIED yet.
 
 **The MVP is not yet complete by the brief's own definition**, which requires the private end-to-end export workflow verified in production. That needs two things:
 
@@ -15,7 +17,7 @@ Recorded 2026-11-10 for the completion brief v1.0 (9 November 2026). Evidence la
 
 | Item | Revision | Evidence |
 | --- | --- | --- |
-| `main` (deployed, both services) | `277d2d3` | VERIFIED SOURCE, DEPLOYED |
+| `main` (deployed, both services) | `2851948` (was `277d2d3`) | DEPLOYED |
 | PR #1 Phase 1 safety foundation | `10704fa` | HOSTED CI |
 | PR #2 Package A identity baseline | `8ce8ace` | HOSTED CI |
 | PR #3 Package B character bible | `1cfcf9d` | HOSTED CI |
@@ -84,7 +86,7 @@ Twelve committed migrations exist. All are additive except one data change in `2
 
 ## Owner decisions still open
 
-1. **Railway prep before merging PR #1:** backup and restore drill, `OWNER_API_TOKEN`, `FRONTEND_URL`, `TRUST_PROXY` (runbook section 1).
+1. **`OWNER_API_TOKEN`:** set it on the api service. `FRONTEND_URL` and `TRUST_PROXY` are set, and the owner took a backup before the deploy.
 2. **Character, audience and platform:** the initial character, audience and platform.
 3. **Login provider:** which login provider replaces the owner token.
 4. **Higgsfield:** API access, model and commercial rights.
