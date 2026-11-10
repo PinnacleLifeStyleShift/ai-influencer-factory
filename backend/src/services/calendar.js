@@ -16,10 +16,12 @@ export async function assertDeliverable(prisma, contentId) {
   const content = await prisma.content.findUnique({ where: { id: contentId }, include: { pipelineItems: true } });
   if (!content) throw new ApiError("NOT_FOUND", 404, "Calendar entry not found");
   if (content.cancelledAt || content.status === "cancelled") throw new ApiError("SCHEDULE_CANCELLED", 409, "This calendar entry was cancelled and can never be delivered");
-  if (content.status !== "scheduled" || !content.scheduleKey) throw new ApiError("NOT_SCHEDULED", 409, "Only entries scheduled from an approved snapshot can be delivered");
+  // partially_published: some destinations are out; the rest may still go.
+  if (!["scheduled", "partially_published"].includes(content.status) || !content.scheduleKey) throw new ApiError("NOT_SCHEDULED", 409, "Only entries scheduled from an approved snapshot can be delivered");
   const item = content.pipelineItems.find((p) => p.contentId === content.id);
   if (!item || item.stage !== "scheduled" || item.approvedHash !== content.approvedHash || snapshotHash(item) !== content.approvedHash) {
     throw new ApiError("APPROVAL_STALE", 409, "The approved content behind this entry has changed");
   }
+  if (item.rightsHoldAt) throw new ApiError("RIGHTS_REVIEW_REQUIRED", 409, "A reference used by this content had its rights revoked; it cannot be delivered until reviewed");
   return { content, item };
 }

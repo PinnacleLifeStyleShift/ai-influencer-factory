@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import * as api from "./api.js";
 import ReviewExport from "./ReviewExport.jsx";
+import Publishing from "./Publishing.jsx";
 
 /**
  * Content package: storyboard, script (versioned), media per shot, caption,
@@ -124,6 +125,7 @@ export default function ContentPackage({ itemId, onClose, onChanged }) {
       </div>
 
       <ReviewExport item={item} hasShots={(item.shotMedia || []).length > 0} onChanged={() => { load().catch(() => {}); onChanged?.(); }} />
+      <Publishing item={item} onChanged={() => { load().catch(() => {}); onChanged?.(); }} />
 
       <div className="text-xs text-zinc-400 mb-2 mt-4">Storyboard</div>
       <div className="overflow-x-auto">

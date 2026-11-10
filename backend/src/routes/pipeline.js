@@ -1,4 +1,5 @@
-import { Router } from "express";
+import { secureRouter } from "../lib/secureRouter.js";
+import { onlyFields } from "../lib/requests.js";
 import { ApiError, sendError, routeError } from "../lib/errors.js";
 import {
   DESTINATIONS, serializeItem, snapshotHash, mediaTypeOf, invalidatingChange,
@@ -15,7 +16,7 @@ import { generateCaption } from "../services/captionGeneration.js";
 import { buildPromptFromCharacter } from "../services/imageGeneration.js";
 import { requestHash } from "../services/spendLedger.js";
 import { ensurePublishedVersion, promptSourceOf, promptHash } from "../services/characterVersions.js";
-import { clearanceFor } from "../services/rights.js";
+import { clearanceFor, rightsHoldError } from "../services/rights.js";
 import {
   createScriptVersion, initialScriptInput, DEFAULT_DISCLOSURE, DEFAULT_EXPORT_SETTINGS,
 } from "../services/scriptVersions.js";
@@ -23,9 +24,11 @@ import { measurePackage } from "../services/shotPlan.js";
 import { resolveLocal, offsetLabel } from "../lib/zonedTime.js";
 import { checkClaims } from "../services/claims.js";
 import { createJob } from "../services/generationJobs.js";
+import { assertGenerationOpen } from "../services/operations.js";
+import { settleJob } from "../services/publishing.js";
 import { isProcessDeath } from "../services/generationGate.js";
 
-const router = Router();
+const router = secureRouter();
 
 /** Wraps a handler so ApiErrors become typed responses and others a generic 500. */
 const handle = (label, fn) => async (req, res) => {
@@ -49,6 +52,11 @@ function optionalString(body, key, max = 5000) {
 function assertNotScheduled(item) {
   if (item.stage === "scheduled") {
     throw new ApiError("ALREADY_SCHEDULED", 409, "Scheduled items cannot be changed; their approved revision is locked");
+  }
+  // WHY: published content is out in the world; editing the record would make
+  // it disagree with what was posted.
+  if (item.stage === "published") {
+    throw new ApiError("ALREADY_PUBLISHED", 409, "Published items cannot be changed; create a new item instead");
   }
 }
 
@@ -169,7 +177,7 @@ router.get("/scripts", handle("GET /pipeline/scripts", async (req, res) => {
 }));
 
 // POST /api/pipeline/discover-trends — SIMULATED fixture ideas (see trendDiscovery.js)
-router.post("/discover-trends", handle("POST /pipeline/discover-trends", async (req, res) => {
+router.post("/discover-trends", ["edit"], handle("POST /pipeline/discover-trends", async (req, res) => {
   const body = req.body || {};
   const platform = body.platform ?? "TikTok";
   const niche = body.niche ?? "Lifestyle";
@@ -217,7 +225,7 @@ router.post("/discover-trends", handle("POST /pipeline/discover-trends", async (
 
 // ─── SCRIPTS ─────────────────────────────────────────────────
 
-router.post("/generate-script", handle("POST /pipeline/generate-script", async (req, res) => {
+router.post("/generate-script", ["edit"], handle("POST /pipeline/generate-script", async (req, res) => {
   const { trendId, characterId, platform, duration, tone, contentType } = req.body || {};
   if (!characterId || typeof characterId !== "string") throw invalid("characterId is required");
 
@@ -296,7 +304,7 @@ router.post("/generate-script", handle("POST /pipeline/generate-script", async (
  *     no other workflow has started on the item since.
  *  6. Release the claim; keep the workflow key on failure so a retry resumes.
  */
-router.post("/generate-content", handle("POST /pipeline/generate-content", async (req, res) => {
+router.post("/generate-content", ["generate", "spend"], onlyFields(["pipelineItemId", "type", "referenceMode", "shotIndex", "confirmReplaceApproved"]), handle("POST /pipeline/generate-content", async (req, res) => {
   const { pipelineItemId, type = "image", referenceMode = "none", shotIndex, confirmReplaceApproved } = req.body || {};
   if (shotIndex !== undefined && (!Number.isInteger(shotIndex) || shotIndex < 0 || shotIndex > 99)) throw invalid("shotIndex must be a whole number");
   if (!pipelineItemId || typeof pipelineItemId !== "string") throw invalid("pipelineItemId is required");
@@ -323,6 +331,7 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
   const needsImage = type === "image" || !item.imageUrl;
   const kinds = type === "image" ? ["image"] : needsImage ? ["image", "video"] : ["video"];
   // (1) Blocks before ANY write, reservation or provider call if any stage is not permitted.
+  await assertGenerationOpen(prisma);
   const checks = gate.preflightAll(kinds);
 
   // The pinned version, or (legacy items) the published one, pinned on apply.
@@ -519,7 +528,23 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
       steps: steps.map((st, i) => ({ kind: st.kind, provider: checks[i].provider, model: checks[i].model, idempotencyKey: st.idempotencyKey })),
       by: req.principal?.id,
     });
-    await gate.runWorkflow(steps, { hooks: journal.hooks });
+    // WHY a recheck right before submission: rights can be revoked while the
+    // workflow reserves money; nothing is sent with references no longer cleared.
+    const recheckRights = async () => {
+      if (!referencesSent.length) return;
+      const images = await prisma.characterImage.findMany({ where: { characterId: item.characterId, fingerprint: { in: referencesSent } } });
+      const blocked = [];
+      for (const img of images) {
+        const c = await clearanceFor(prisma, img.id, "provider_input");
+        if (!c.cleared) blocked.push({ imageId: img.id, missing: c.missing });
+      }
+      if (blocked.length || images.length !== referencesSent.length) {
+        const e = new ApiError("REFERENCE_NOT_CLEARED", 409, "Reference images are no longer cleared for provider use; nothing was sent", { blocked });
+        e.preSubmitRefusal = true;
+        throw e;
+      }
+    };
+    await gate.runWorkflow(steps, { hooks: { ...journal.hooks, beforeSubmit: async (i) => { await assertGenerationOpen(prisma); await recheckRights(); await journal.hooks.beforeSubmit(i); } } });
     finished = true;
   } catch (err) {
     // A (simulated) process death leaves everything exactly as it was.
@@ -555,7 +580,7 @@ router.post("/generate-content", handle("POST /pipeline/generate-content", async
 
 // ─── CAPTION / MANUAL EDITS ──────────────────────────────────
 
-router.post("/generate-caption", handle("POST /pipeline/generate-caption", async (req, res) => {
+router.post("/generate-caption", ["edit"], handle("POST /pipeline/generate-caption", async (req, res) => {
   const { pipelineItemId, platform } = req.body || {};
   if (!pipelineItemId || typeof pipelineItemId !== "string") throw invalid("pipelineItemId is required");
   if (platform !== undefined && !DESTINATIONS.includes(platform)) throw invalid(`platform must be one of ${DESTINATIONS.join(", ")}`);
@@ -579,7 +604,7 @@ router.post("/generate-caption", handle("POST /pipeline/generate-caption", async
 
 // PATCH /api/pipeline/:id { caption?, hashtags?, platform?, disclosure?, exportSettings?, schedule?, revision? }
 // Any change bumps the revision and invalidates an existing approval.
-router.patch("/:id", handle("PATCH /pipeline/:id", async (req, res) => {
+router.patch("/:id", ["edit"], handle("PATCH /pipeline/:id", async (req, res) => {
   const body = req.body || {};
   const changes = {};
   const caption = optionalString(body, "caption");
@@ -604,6 +629,13 @@ router.patch("/:id", handle("PATCH /pipeline/:id", async (req, res) => {
     changes.exportSettings = { format: e.format, aspectRatio: e.aspectRatio, burnInCaptions: e.burnInCaptions };
   }
   if (body.schedule !== undefined) Object.assign(changes, parseSchedule(body.schedule));
+  if (body.crossPostDestinations !== undefined) {
+    const list = body.crossPostDestinations;
+    if (!Array.isArray(list) || list.some((d) => !DESTINATIONS.includes(d)) || new Set(list).size !== list.length) {
+      throw invalid(`crossPostDestinations must be a list of distinct destinations from ${DESTINATIONS.join(", ")}`);
+    }
+    changes.crossPostDestinations = [...list].sort();
+  }
   if (body.revision !== undefined && !Number.isInteger(body.revision)) throw invalid("revision must be an integer");
 
   const item = await req.prisma.pipelineItem.findUnique({ where: { id: req.params.id } });
@@ -633,10 +665,11 @@ router.get("/:id", handle("GET /pipeline/:id", async (req, res) => {
   res.json(serializeItem(item));
 }));
 
-router.delete("/:id", handle("DELETE /pipeline/:id", async (req, res) => {
+router.delete("/:id", ["edit"], handle("DELETE /pipeline/:id", async (req, res) => {
   const item = await req.prisma.pipelineItem.findUnique({ where: { id: req.params.id } });
   if (!item) throw notFound();
   if (item.stage === "scheduled") throw new ApiError("ALREADY_SCHEDULED", 409, "Cancel the schedule before deleting this item");
+  if (item.stage === "published") throw new ApiError("ALREADY_PUBLISHED", 409, "Published items are kept as the record of what was posted");
   await req.prisma.pipelineItem.delete({ where: { id: req.params.id } });
   res.json({ success: true });
 }));
@@ -645,7 +678,7 @@ router.delete("/:id", handle("DELETE /pipeline/:id", async (req, res) => {
 
 // POST /api/pipeline/:id/approve { revision, snapshotHash, notes? }
 // Approves exactly the snapshot the reviewer saw.
-router.post("/:id/approve", handle("POST /pipeline/:id/approve", async (req, res) => {
+router.post("/:id/approve", ["approve"], onlyFields(["revision", "snapshotHash", "notes"]), handle("POST /pipeline/:id/approve", async (req, res) => {
   const { revision, snapshotHash: clientHash, notes } = req.body || {};
   if (!Number.isInteger(revision) || typeof clientHash !== "string") {
     throw invalid("revision (integer) and snapshotHash (string) of the reviewed version are required");
@@ -657,6 +690,7 @@ router.post("/:id/approve", handle("POST /pipeline/:id/approve", async (req, res
   if (item.stage !== "review") {
     throw new ApiError("INVALID_TRANSITION", 409, `Only items in review can be approved (current stage: ${item.stage})`);
   }
+  if (item.rightsHoldAt) throw rightsHoldError(item);
   const currentHash = snapshotHash(item);
   if (revision !== item.revision || clientHash !== currentHash) {
     throw new ApiError("APPROVAL_STALE", 409, "The item changed since it was reviewed; review the current version",
@@ -706,7 +740,7 @@ router.post("/:id/approve", handle("POST /pipeline/:id/approve", async (req, res
   res.json({ success: true, pipelineItem: serializeItem(updated) });
 }));
 
-router.post("/:id/reject", handle("POST /pipeline/:id/reject", async (req, res) => {
+router.post("/:id/reject", ["approve"], onlyFields(["notes"]), handle("POST /pipeline/:id/reject", async (req, res) => {
   const notes = req.body?.notes;
   if (notes !== undefined && (typeof notes !== "string" || notes.length > 2000)) throw invalid("notes must be a string");
   const item = await req.prisma.pipelineItem.findUnique({ where: { id: req.params.id } });
@@ -733,7 +767,7 @@ router.post("/:id/reject", handle("POST /pipeline/:id/reject", async (req, res) 
 // here: to change the time, edit the item (which clears approval) and
 // re-approve. Calendar planning only; nothing is published. Atomic and
 // idempotent per approved snapshot (unique scheduleKey).
-router.post("/:id/schedule", handle("POST /pipeline/:id/schedule", async (req, res) => {
+router.post("/:id/schedule", ["schedule"], onlyFields(["scheduledDate", "platform"]), handle("POST /pipeline/:id/schedule", async (req, res) => {
   const { scheduledDate, platform } = req.body || {};
   const prisma = req.prisma;
 
@@ -761,6 +795,7 @@ router.post("/:id/schedule", handle("POST /pipeline/:id/schedule", async (req, r
       if (item.approvedRevision !== item.revision || item.approvedHash !== hash) {
         throw new ApiError("APPROVAL_STALE", 409, "Approved snapshot no longer matches the item; re-approval required");
       }
+      if (item.rightsHoldAt) throw rightsHoldError(item);
       if (!item.scheduledAt || !item.scheduleTimezone) {
         throw new ApiError("SCHEDULE_TIME_REQUIRED", 409,
           "Set the destination time and time zone on the item, then approve it; the approval covers the schedule");
@@ -829,7 +864,7 @@ router.post("/:id/schedule", handle("POST /pipeline/:id/schedule", async (req, r
 // the same transaction that moves the item back to review with a new
 // revision. Any downstream job holding the old snapshot then fails its
 // conditional checks (status, approved hash) instead of delivering it.
-router.post("/:id/cancel-schedule", handle("POST /pipeline/:id/cancel-schedule", async (req, res) => {
+router.post("/:id/cancel-schedule", ["schedule"], onlyFields(["reason"]), handle("POST /pipeline/:id/cancel-schedule", async (req, res) => {
   const reason = req.body?.reason;
   if (typeof reason !== "string" || reason.trim().length < 3 || reason.length > 500) {
     throw invalid("reason is required (3-500 characters)");
@@ -845,15 +880,38 @@ router.post("/:id/cancel-schedule", handle("POST /pipeline/:id/cancel-schedule",
     });
     if (moved.count !== 1) throw new ApiError("REVISION_CONFLICT", 409, "The item changed meanwhile; reload and retry");
     if (item.contentId) {
-      await tx.content.updateMany({
-        where: { id: item.contentId, status: "scheduled", cancelledAt: null },
-        data: { status: "cancelled", cancelledAt: new Date(), cancelledBy: req.principal?.role || "unknown", cancelReason: reason.trim() },
+      const stamp = { cancelledAt: new Date(), cancelledBy: req.principal?.role || "unknown", cancelReason: reason.trim() };
+      await tx.content.updateMany({ where: { id: item.contentId, status: "scheduled", cancelledAt: null }, data: { status: "cancelled", ...stamp } });
+      // Partly published: what is out stays out (and stays recorded); the
+      // remaining destinations are stopped.
+      await tx.content.updateMany({ where: { id: item.contentId, status: "partially_published", cancelledAt: null }, data: stamp });
+      await tx.publishDelivery.updateMany({
+        where: { job: { contentId: item.contentId }, state: { in: ["pending", "failed", "resolved_not_published"] } },
+        data: { state: "cancelled", revision: { increment: 1 } },
       });
     }
   });
+  const job = item.contentId ? await prisma.publishJob.findUnique({ where: { contentId: item.contentId } }) : null;
+  if (job) await settleJob(prisma, job.id);
   const updated = await prisma.pipelineItem.findUnique({ where: { id: item.id }, include: ITEM_INCLUDE });
   const content = item.contentId ? await prisma.content.findUnique({ where: { id: item.contentId } }) : null;
   res.json({ success: true, pipelineItem: serializeItem(updated), content });
+}));
+
+// POST /api/pipeline/:id/rights-hold/clear { note } — the owner reviewed the
+// item after a rights revocation (e.g. regenerated without that reference).
+router.post("/:id/rights-hold/clear", ["admin"], onlyFields(["note"]), handle("POST /pipeline/:id/rights-hold/clear", async (req, res) => {
+  const note = req.body?.note;
+  if (typeof note !== "string" || note.trim().length < 5 || note.length > 1000) throw invalid("note is required: what was reviewed (5-1000 characters)");
+  const item = await req.prisma.pipelineItem.findUnique({ where: { id: req.params.id } });
+  if (!item) throw notFound();
+  const { count } = await req.prisma.pipelineItem.updateMany({
+    where: { id: item.id, rightsHoldAt: { not: null } },
+    data: { rightsHoldAt: null, rightsHoldReason: null, reviewNotes: `Rights hold cleared by ${req.principal?.role || "owner"}: ${note.trim()}`.slice(0, 2000) },
+  });
+  if (count !== 1) throw new ApiError("NO_RIGHTS_HOLD", 409, "This item has no rights hold");
+  const updated = await req.prisma.pipelineItem.findUnique({ where: { id: item.id }, include: ITEM_INCLUDE });
+  res.json({ success: true, pipelineItem: serializeItem(updated) });
 }));
 
 export default router;

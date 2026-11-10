@@ -155,6 +155,43 @@ export const characterImages = {
   rights: (imageId) => request(`/api/character-images/${imageId}/rights`),
   recordRights: (imageId, data) => request(`/api/character-images/${imageId}/rights`, { method: "POST", body: JSON.stringify(data) }),
   approveRights: (imageId, recordId) => request(`/api/character-images/${imageId}/rights/approve`, { method: "POST", body: JSON.stringify({ recordId }) }),
+  revokeRights: (imageId, reason) => request(`/api/character-images/${imageId}/rights/revoke`, { method: "POST", body: JSON.stringify({ reason }) }),
+};
+
+// ─── Operations (owner) ───────────────────────────────────
+export const system = {
+  operations: () => request("/api/system/operations"),
+  setGenerationPause: (paused, reason) => request("/api/system/generation-switch", { method: "POST", body: JSON.stringify({ paused, reason }) }),
+};
+
+// ─── Measurement (readings with provenance) ───────────────
+export const metrics = {
+  subjects: () => request("/api/metrics/subjects"),
+  providers: () => request("/api/metrics/providers"),
+  observations: (params = {}) => request(`/api/metrics/observations?${new URLSearchParams(params)}`),
+  record: (data) => request("/api/metrics/observations", { method: "POST", body: JSON.stringify(data) }),
+  retract: (id, reason) => request(`/api/metrics/observations/${id}/retract`, { method: "POST", body: JSON.stringify({ reason }) }),
+  report: (params) => request(`/api/metrics/report?${new URLSearchParams(params)}`),
+  refresh: () => request("/api/metrics/refresh", { method: "POST", body: "{}" }),
+};
+
+// ─── Campaign money: planned / invoiced / received ────────
+export const campaignMoney = {
+  get: (id) => request(`/api/campaigns/${id}/money`),
+  addInvoice: (id, data) => request(`/api/campaigns/${id}/invoices`, { method: "POST", body: JSON.stringify(data) }),
+  voidInvoice: (id, invoiceId, reason) => request(`/api/campaigns/${id}/invoices/${invoiceId}/void`, { method: "POST", body: JSON.stringify({ reason }) }),
+  addReceipt: (id, data) => request(`/api/campaigns/${id}/receipts`, { method: "POST", body: JSON.stringify(data) }),
+  reverseReceipt: (id, receiptId, reason) => request(`/api/campaigns/${id}/receipts/${receiptId}/reverse`, { method: "POST", body: JSON.stringify({ reason }) }),
+};
+
+// ─── Publishing (mock/simulated only until approved) ──────
+export const publishing = {
+  policy: () => request("/api/publishing/policy"),
+  jobs: (params = {}) => request(`/api/publishing/jobs?${new URLSearchParams(params)}`),
+  publish: (contentId) => request(`/api/publishing/content/${contentId}/publish`, { method: "POST", body: "{}" }),
+  recover: () => request("/api/publishing/recover", { method: "POST", body: "{}" }),
+  check: (deliveryId) => request(`/api/publishing/deliveries/${deliveryId}/check`, { method: "POST", body: "{}" }),
+  resolve: (deliveryId, data) => request(`/api/publishing/deliveries/${deliveryId}/resolve`, { method: "POST", body: JSON.stringify(data) }),
 };
 
 // ─── Generation jobs / reconciliation ─────────────────────
@@ -223,11 +260,14 @@ export const pipeline = {
     request(`/api/pipeline/${id}/reject`, { method: "POST", body: JSON.stringify(data) }),
   schedule: (id, data = {}) =>
     request(`/api/pipeline/${id}/schedule`, { method: "POST", body: JSON.stringify(data) }),
+  clearRightsHold: (id, note) => request(`/api/pipeline/${id}/rights-hold/clear`, { method: "POST", body: JSON.stringify({ note }) }),
   cancelSchedule: (id, reason) =>
     request(`/api/pipeline/${id}/cancel-schedule`, { method: "POST", body: JSON.stringify({ reason }) }),
   measureMedia: (id) => request(`/api/pipeline/${id}/measure-media`, { method: "POST", body: "{}" }),
+  assemble: (id) => request(`/api/pipeline/${id}/assemble`, { method: "POST", body: "{}" }),
   exports: (id) => request(`/api/pipeline/${id}/exports`),
-  createExport: (id) => request(`/api/pipeline/${id}/exports`, { method: "POST", body: "{}" }),
+  verifyExport: (id, exportId) => request(`/api/pipeline/${id}/exports/${exportId}/verify`),
+  createExport: (id, reviewed = {}) => request(`/api/pipeline/${id}/exports`, { method: "POST", body: JSON.stringify(reviewed) }),
   /** Downloads an export (authenticated) and returns { blob, filename, current }. */
   downloadExport: async (id, exportId, format = "json") => {
     const res = await request(`/api/pipeline/${id}/exports/${exportId}/download?format=${format}`, { raw: true });

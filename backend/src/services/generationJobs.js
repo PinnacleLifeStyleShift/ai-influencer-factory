@@ -47,7 +47,7 @@ export async function createJob(prisma, { kind, targetType, targetId, workflowKe
 function journalFor(prisma, jobId, leaseOwner) {
   // Fenced write: only while this worker still owns the lease.
   async function setStep(index, data) {
-    const { count } = await prisma.generationStep.updateMany({ where: { jobId, index, job: { leaseOwner } }, data });
+    const { count } = await prisma.generationStep.updateMany({ where: { jobId, index, job: { leaseOwner } }, data: { ...data, revision: { increment: 1 } } });
     if (count !== 1) throw new ApiError("JOB_LEASE_LOST", 409, "This generation job was taken over by recovery");
   }
   return {
@@ -97,12 +97,12 @@ export async function recoverAbandoned(prisma, ledger, { now = new Date(), log =
       if (["pending", "reserved"].includes(step.state)) {
         // Never marked as submitting: provably never sent.
         if (reservation?.state === "reserved") await ledger.release(reservation.id);
-        await prisma.generationStep.update({ where: { id: step.id }, data: { state: "not_submitted", reservationId: reservation?.id || step.reservationId, errorCode: "PROCESS_DIED_BEFORE_SUBMIT" } });
+        await prisma.generationStep.update({ where: { id: step.id }, data: { state: "not_submitted", reservationId: reservation?.id || step.reservationId, errorCode: "PROCESS_DIED_BEFORE_SUBMIT", revision: { increment: 1 } } });
         outcome.released++;
       } else if (["submitting", "accepted"].includes(step.state)) {
         // May have reached the provider: keep the money, block re-purchase.
         if (reservation?.state === "reserved") await ledger.markUnknown(reservation.id);
-        await prisma.generationStep.update({ where: { id: step.id }, data: { state: "outcome_unknown", errorCode: "PROCESS_DIED_AFTER_SUBMIT" } });
+        await prisma.generationStep.update({ where: { id: step.id }, data: { state: "outcome_unknown", errorCode: "PROCESS_DIED_AFTER_SUBMIT", revision: { increment: 1 } } });
         outcome.unknown++;
       }
     }
@@ -124,7 +124,16 @@ async function refreshJobState(prisma, jobId) {
 
 const resultFor = (kind, url) => (kind === "image" ? { imageUrl: url } : { videoUrl: url });
 
-/** Asks the provider about an uncertain step (only adapters that support lookups). */
+const conflict = (current, extra = {}) => new ApiError("RECONCILIATION_CONFLICT", 409,
+  "This step changed while you were deciding; review the current state and its history",
+  { currentState: current?.state, currentRevision: current?.revision, ...extra });
+
+/**
+ * Asks the provider about an uncertain step (only adapters that support lookups).
+ * WHY the recheck: the lookup is slow. If someone decided the step meanwhile,
+ * the late answer must not overwrite that decision; it is kept as
+ * conflicting evidence for the owner to review instead.
+ */
 export async function checkStep(prisma, gate, ledger, stepId, { by }) {
   const step = await prisma.generationStep.findUnique({ where: { id: stepId } });
   if (!step) throw new ApiError("NOT_FOUND", 404, "Step not found");
@@ -134,11 +143,22 @@ export async function checkStep(prisma, gate, ledger, stepId, { by }) {
   if (!answer) throw new ApiError("CHECK_UNSUPPORTED", 409, "This provider adapter cannot look up earlier requests; resolve it manually with evidence");
   const record = { stepId, reservationId: step.reservationId, method: "provider_check", resolvedBy: by };
   if (answer.status === "succeeded" && answer.url && checkExternalUrl(answer.url).ok) {
-    await ledger.resolve(step.reservationId, { charged: true, actualMicros: null, result: resultFor(step.kind, answer.url) });
-    await prisma.$transaction([
-      prisma.generationStep.update({ where: { id: step.id }, data: { state: "succeeded", result: resultFor(step.kind, answer.url) } }),
-      prisma.reconciliationRecord.create({ data: { ...record, resolution: "charged_with_result", evidence: `Provider reported request ${step.providerRequestId} succeeded`, resultUrl: answer.url } }),
-    ]);
+    try {
+      await prisma.$transaction(async (tx) => {
+        const { count } = await tx.generationStep.updateMany({
+          where: { id: step.id, state: step.state, revision: step.revision },
+          data: { state: "succeeded", result: resultFor(step.kind, answer.url), revision: { increment: 1 } },
+        });
+        if (count !== 1) throw conflict(await tx.generationStep.findUnique({ where: { id: step.id } }));
+        await ledger.resolve(step.reservationId, { charged: true, actualMicros: null, result: resultFor(step.kind, answer.url) }, { tx });
+        await tx.reconciliationRecord.create({ data: { ...record, resolution: "charged_with_result", evidence: `Provider reported request ${step.providerRequestId} succeeded`, resultUrl: answer.url } });
+      });
+    } catch (err) {
+      if (err?.code === "RECONCILIATION_CONFLICT") {
+        await prisma.reconciliationRecord.create({ data: { ...record, resolution: "conflicting_evidence", evidence: `Provider reported request ${step.providerRequestId} succeeded after the step was already decided as ${err.details?.currentState}`, resultUrl: answer.url } });
+      }
+      throw err;
+    }
   } else {
     // Failed or still running: the charge is still uncertain, so nothing changes.
     await prisma.reconciliationRecord.create({ data: { ...record, resolution: "still_pending", evidence: `Provider reported "${answer.status}" for request ${step.providerRequestId}` } });
@@ -147,11 +167,17 @@ export async function checkStep(prisma, gate, ledger, stepId, { by }) {
   return prisma.generationStep.findUnique({ where: { id: step.id }, include: { reconciliations: true } });
 }
 
-/** Operator resolution of an uncertain step, with evidence (owner only, enforced by the route table). */
-export async function resolveStep(prisma, ledger, stepId, { resolution, evidence, actualCost, resultUrl, by }) {
+/**
+ * Operator resolution of an uncertain step, with evidence (owner only).
+ * WHY expectedRevision + one transaction: the owner decides about the step as
+ * they saw it. The step, its reservation and the audit record change together
+ * only if nothing changed since; a parallel decision gets RECONCILIATION_CONFLICT.
+ */
+export async function resolveStep(prisma, ledger, stepId, { resolution, evidence, actualCost, resultUrl, expectedRevision, by }) {
   const fields = {};
   if (!["not_charged", "charged_no_result", "charged_with_result"].includes(resolution)) fields.resolution = "must be not_charged, charged_no_result or charged_with_result";
   if (typeof evidence !== "string" || evidence.trim().length < 10 || evidence.length > 2000) fields.evidence = "is required: what you checked (10-2000 characters), e.g. the provider dashboard entry";
+  if (!Number.isInteger(expectedRevision)) fields.expectedRevision = "is required: the step revision you reviewed";
   let actualMicros = null;
   if (actualCost !== undefined && actualCost !== null && actualCost !== "") {
     actualMicros = usdToMicros(actualCost);
@@ -165,7 +191,8 @@ export async function resolveStep(prisma, ledger, stepId, { resolution, evidence
 
   const step = await prisma.generationStep.findUnique({ where: { id: stepId } });
   if (!step) throw new ApiError("NOT_FOUND", 404, "Step not found");
-  if (!UNCERTAIN.includes(step.state)) throw new ApiError("NOT_RESOLVABLE", 409, `Step is ${step.state}; nothing to resolve`);
+  // One read, then compare-and-swap: whoever loses a race gets a conflict.
+  if (step.revision !== expectedRevision || !UNCERTAIN.includes(step.state)) throw conflict(step);
   const job = await prisma.generationJob.findUnique({ where: { id: step.jobId } });
   if (OPEN_JOB.includes(job.state) && job.leaseExpiresAt && job.leaseExpiresAt > new Date()) {
     throw new ApiError("JOB_STILL_RUNNING", 409, "The job is still running; wait for it to finish or for its lease to expire");
@@ -173,17 +200,21 @@ export async function resolveStep(prisma, ledger, stepId, { resolution, evidence
   const reservation = step.reservationId ? await ledger.get(step.reservationId) : await ledger.findByKey(step.idempotencyKey);
   if (!reservation) throw new ApiError("NOT_RESOLVABLE", 409, "No reservation found for this step");
   const result = resolution === "charged_with_result" ? resultFor(step.kind, resultUrl) : null;
-  await ledger.resolve(reservation.id, { charged: resolution !== "not_charged", actualMicros, result });
   const stepState = { not_charged: "resolved_not_charged", charged_no_result: "resolved_charged_no_result", charged_with_result: "resolved_charged_with_result" }[resolution];
-  await prisma.$transaction([
-    prisma.generationStep.update({ where: { id: step.id }, data: { state: stepState, reservationId: reservation.id, ...(result ? { result } : {}) } }),
-    prisma.reconciliationRecord.create({
+  await prisma.$transaction(async (tx) => {
+    const { count } = await tx.generationStep.updateMany({
+      where: { id: step.id, state: step.state, revision: expectedRevision },
+      data: { state: stepState, reservationId: reservation.id, ...(result ? { result } : {}), revision: { increment: 1 } },
+    });
+    if (count !== 1) throw conflict(await tx.generationStep.findUnique({ where: { id: step.id } }));
+    await ledger.resolve(reservation.id, { charged: resolution !== "not_charged", actualMicros, result }, { tx });
+    await tx.reconciliationRecord.create({
       data: {
         stepId, reservationId: reservation.id, method: "operator", resolution, evidence: evidence.trim(),
         actualMicros: actualMicros === null ? null : BigInt(actualMicros), resultUrl: resultUrl || null, resolvedBy: by,
       },
-    }),
-  ]);
+    });
+  });
   await refreshJobState(prisma, step.jobId);
   return prisma.generationStep.findUnique({ where: { id: step.id }, include: { reconciliations: true } });
 }
