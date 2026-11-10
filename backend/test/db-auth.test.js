@@ -83,7 +83,7 @@ test("roles are enforced on the server, and spending is its own permission", opt
     env: {
       APPROVED_PROVIDER_MODELS: "higgsfield:soul", LIVE_PROVIDER_CALLS: "enabled",
       PROVIDER_PRICES_USD: JSON.stringify({ "higgsfield:soul": "1.00" }),
-      SPEND_CAP_PER_JOB_USD: "5", SPEND_CAP_DAILY_USD: "5", SPEND_CAP_MONTHLY_USD: "5",
+      SPEND_CAP_PER_JOB_USD: "5", SPEND_CAP_DAILY_USD: "5", SPEND_CAP_MONTHLY_USD: "5", PRICE_CURRENCY: "USD", PRICE_VERSION: "test-fixture-v1", SPEND_CAP_TIMEZONE: "UTC",
     },
     ledger: createMemoryLedger({ durable: true }),
     adapters: { image: { "higgsfield:soul": { generate: async () => { providerCalls++; return { imageUrl: "https://example.test/x.png" }; } } }, video: {} },
@@ -139,3 +139,15 @@ test("credential exchange is rate limited", opts, () => withApp(async (app) => {
   assert.deepEqual(statuses.slice(0, 10), Array(10).fill(401));
   assert.deepEqual(statuses.slice(10), [429, 429]);
 }));
+
+test("an editor cannot reach generation or rights approval through route variants", opts, () => withApp(async (app) => {
+  const editor = await sessionWithRole("editor");
+  const item = await makeReviewItem(prisma);
+  for (const p of [`/api/characters/${item.characterId}/generate-image`, `/api/characters/${item.characterId}/generate-image/`,
+    `/api/characters/${item.characterId}/GENERATE-IMAGE`, `/api/character-images/x/rights/approve/`, "/api/pipeline/generate-content/"]) {
+    const r = await as(app, editor, p, { method: "POST", body: { pipelineItemId: item.id } });
+    assert.ok([403, 404].includes(r.status), `${p} -> ${r.status}`);
+  }
+  assert.equal(await prisma.generationReservation.count(), 0);
+}));
+

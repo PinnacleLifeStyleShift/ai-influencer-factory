@@ -79,7 +79,7 @@ test("routes use the gate injected into the app (no module-global gate)", async 
   const calls = [];
   const gate = {
     describe: () => ({ injected: true }),
-    preflightAll: () => [],
+    preflightAll: (kinds) => kinds.map(() => ({ provider: "injected", model: "test" })),
     run: async (kind, input, keys) => { calls.push({ kind, keys }); return { videoUrl: "https://example.test/injected.mp4" }; },
     runWorkflow: async () => { throw new Error("unused"); },
   };

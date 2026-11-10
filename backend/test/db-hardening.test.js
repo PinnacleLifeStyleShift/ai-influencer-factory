@@ -110,7 +110,9 @@ test("the audit trail records actor, action pattern, target and outcome, and not
   const forbidden = rows.find((r) => r.actorId === "synthetic-reviewer");
   assert.equal(forbidden.outcome, "denied");
   assert.equal(forbidden.errorCode, "FORBIDDEN");
-  assert.equal(forbidden.targetId, null, "denied before routing: id not parsed");
+  // Authorization is route-bound, so a denied attempt records which object it targeted.
+  assert.equal(forbidden.targetId, created.body.id);
+  assert.match(forbidden.action, /:id/);
   assert.ok(!forbidden.action.includes(created.body.id), "raw ids never appear in the action");
 
   const anon = rows.find((r) => r.action.startsWith("DELETE") && r.actorId === null);
