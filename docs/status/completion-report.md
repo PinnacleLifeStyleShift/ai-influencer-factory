@@ -6,7 +6,7 @@ Recorded 2026-11-10 for the completion brief v1.0 (9 November 2026). Evidence la
 
 **Bottom line:** every package in the brief is built and tested with mocks, synthetic media and throwaway databases.
 
-> **Update, 10 November 2026:** PRs #1–#17 are merged and `022d448` is DEPLOYED on both services. The production database is migrated, and `OWNER_API_TOKEN` is set (checked by name only). The AIF 1–3 remediation is in `remediation-2026-11-10.md`; it is not merged or deployed. See `ai-influencer-prompt-evidence.md`. Nothing is LIVE-VERIFIED yet.
+> **Update, 10 November 2026:** PRs #1–#18 are merged and `3fb3562` is DEPLOYED on both services. The production database is migrated, and `OWNER_API_TOKEN` is set (checked by name only). The AIF 1–3 remediation (`remediation-2026-11-10.md`) is merged and deployed. See `ai-influencer-prompt-evidence.md`. Nothing is LIVE-VERIFIED yet.
 
 **The MVP is not yet complete by the brief's own definition**, which requires the private end-to-end export workflow verified in production. That needs two things:
 
@@ -17,7 +17,7 @@ Recorded 2026-11-10 for the completion brief v1.0 (9 November 2026). Evidence la
 
 | Item | Revision | Evidence |
 | --- | --- | --- |
-| `main` (deployed, both services) | `2851948` (was `277d2d3`) | DEPLOYED |
+| `main` (deployed, both services) | `3fb3562` (was `277d2d3`) | DEPLOYED |
 | PR #1 Phase 1 safety foundation | `10704fa` | HOSTED CI |
 | PR #2 Package A identity baseline | `8ce8ace` | HOSTED CI |
 | PR #3 Package B character bible | `1cfcf9d` | HOSTED CI |

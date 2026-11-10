@@ -1,14 +1,16 @@
 # Remediation: overnight review addendum of 10 November 2026 (AIF 1–3)
 
-This is the response to the AI Influencer Factory section of the review addendum. **Base:** `main` at `022d448` (deployed on both services). **Branch:** `aif-remediation`. It is not merged or deployed: the addendum authorizes no merge, deployment or production migration.
+This is the response to the AI Influencer Factory section of the review addendum. **Base:** `main` at `022d448`. **Branch:** `aif-remediation`, PR #18.
+
+> **Released 10 November 2026 at the owner's instruction ("Merge 18 and deploy"):** merged as `3fb3562` and deployed on both services. See "Release record" below.
 
 ## Source versus serving
 
 | State | Revision | Notes |
 | --- | --- | --- |
-| Serving (api and frontend) | `022d448` | Checked through Railway deployment metadata. `OWNER_API_TOKEN` is present by variable name. `MEDIA_STORE` and `MEDIA_ASSEMBLY` are unset, so the assembly and export path is off in production. |
-| Candidate | head of `aif-remediation` | Contains AIF 1–3 and two additive migrations. |
-| Merged | none | Not merged. |
+| Candidate | `e4ab51f` (head of `aif-remediation`) | Contains AIF 1–3 and two additive migrations. Hosted CI green (backend, frontend, browser, Docker). |
+| Merged | `3fb3562` | PR #18. |
+| Serving (api and frontend) | `3fb3562` | Checked through Railway deployment metadata. `OWNER_API_TOKEN` is present by variable name. `MEDIA_STORE` and `MEDIA_ASSEMBLY` are unset, so the assembly and export path is off in production. |
 
 ## Dispositions
 
@@ -111,3 +113,17 @@ Before the fix, `db-metric-intervals` failed 9 of 10 tests. The cumulative-snaps
     - `/ready` returns 200;
     - an unauthenticated `/api/metrics/report` returns 401;
     - run the dry-run classification.
+
+## Release record (DEPLOYED)
+
+- **Merged and deployed:** `3fb3562`, 10 November 2026, about 16:30 UTC, api and frontend.
+- **Migrations:** `20261111000000_metric_revisions` and `20261111010000_asset_lineage` applied (`[migrate] Done.`).
+- **API:** started with no configuration error and passed the `/ready` health check.
+- **Still disabled at startup:** `LIVE_PROVIDER_CALLS`, `LIVE_PUBLISHING`, `MEDIA_STORE` and `MEDIA_ASSEMBLY`; retention is unset (nothing deleted).
+- **Backup:** no backup was taken immediately before this release; the release plan asked for one. The migrations are additive and the previous revision is compatible. The owner should take a backup now as a restore point.
+- **Observed in production HTTP logs, before this release (`022d448`, token set):**
+  - unauthenticated `GET /api/system/operations` returned 401;
+  - `/health` and `/ready` returned 200.
+- **Not yet run:**
+  - the legacy-duplicate dry run (`scripts/metrics-classify-legacy.mjs`), which needs the production database URL from the owner's own machine;
+  - an unauthenticated request against `3fb3562` specifically.

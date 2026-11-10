@@ -7,8 +7,9 @@ Statuses are kept separate, as the prompt requires:
 - **Code present.**
 - **Locally tested.**
 - **Hosted CI:** green at the exact head.
-- **Deployed:** `022d448` on both Railway services (api and frontend), 10 November 2026. Production database migrated (all 16 migrations applied). `OWNER_API_TOKEN` is set on the api service (checked by variable name only), and the redeploy logged no configuration error.
-- **Remediation of 10 November (AIF 1–3):** see `remediation-2026-11-10.md`. It is not merged or deployed.
+- **Deployed:** `3fb3562` on both Railway services (was `022d448` (api and frontend), until the AIF 1–3 release), 10 November 2026. Production database migrated (all 18 migrations applied). `OWNER_API_TOKEN` is set on the api service (checked by variable name only), and the redeploy logged no configuration error.
+- **Remediation of 10 November (AIF 1–3):** merged (PR #18) and deployed. See `remediation-2026-11-10.md`.
+- **Observed in production:** an unauthenticated `/api/system/operations` request returned 401 (HTTP logs).
 - **Accepted by the intended user:** none yet.
 
 ## PRs added for this prompt (all merged into `main`)
