@@ -52,7 +52,7 @@ export function generationJobRoutes({ gate, ledger }) {
   router.post("/steps/:stepId/resolve", ["admin"], wrap("POST /generation-jobs/steps/:stepId/resolve", async (req, res) => {
     const b = req.body || {};
     res.json(serializeStep(await resolveStep(req.prisma, ledger, req.params.stepId, {
-      resolution: b.resolution, evidence: b.evidence, actualCost: b.actualCost, resultUrl: b.resultUrl, by: req.principal.id,
+      resolution: b.resolution, evidence: b.evidence, actualCost: b.actualCost, resultUrl: b.resultUrl, expectedRevision: b.expectedRevision, by: req.principal.id,
     })));
   }));
 

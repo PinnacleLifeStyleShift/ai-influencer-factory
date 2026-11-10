@@ -866,7 +866,7 @@ router.post("/:id/cancel-schedule", ["schedule"], handle("POST /pipeline/:id/can
       await tx.content.updateMany({ where: { id: item.contentId, status: "partially_published", cancelledAt: null }, data: stamp });
       await tx.publishDelivery.updateMany({
         where: { job: { contentId: item.contentId }, state: { in: ["pending", "failed", "resolved_not_published"] } },
-        data: { state: "cancelled" },
+        data: { state: "cancelled", revision: { increment: 1 } },
       });
     }
   });

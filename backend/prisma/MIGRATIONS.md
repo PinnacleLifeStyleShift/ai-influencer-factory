@@ -40,3 +40,4 @@ is no longer used at build time, at startup, or in tests.
 | `20261110060000_publishing` | Additive only: `cross_post_destinations` on `pipeline_items`; `publish_jobs`, `publish_deliveries`, `publish_reconciliations` |
 | `20261110070000_measurement` | Additive only: `currency` on `campaigns` (default `USD`); `metric_observations`, `campaign_invoices`, `campaign_receipts` |
 | `20261110080000_sponsor_authorization` | Additive only: sponsor legal name, agreement reference, authorization time/by and paid-promotion disclosure on `campaigns` |
+| `20261110090000_reconciliation_revisions` | Additive only: `revision` (default 0) on `generation_steps` and `publish_deliveries` for compare-and-swap reconciliation |

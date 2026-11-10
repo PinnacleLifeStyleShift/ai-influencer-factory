@@ -531,6 +531,8 @@ model GenerationStep {
   errorCode            String?  @map("error_code")
   createdAt            DateTime @default(now()) @map("created_at")
   updatedAt            DateTime @updatedAt @map("updated_at")
+  // Bumped on every change; reconciliation decisions compare-and-swap on it.
+  revision        Int      @default(0)
   reconciliations      ReconciliationRecord[]
 
   @@unique([jobId, index])
@@ -614,6 +616,8 @@ model PublishDelivery {
   submittedAt     DateTime? @map("submitted_at")
   confirmedAt     DateTime? @map("confirmed_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
+  // Bumped on every change; reconciliation decisions compare-and-swap on it.
+  revision        Int      @default(0)
   reconciliations PublishReconciliation[]
 
   @@unique([jobId, platform])

@@ -40,8 +40,8 @@ export function publishingRoutes() {
   }));
 
   router.post("/deliveries/:id/resolve", ["admin"], handle("POST /publishing/deliveries/:id/resolve", async (req, res) => {
-    const { resolution, evidence, remotePostId, permalink } = req.body || {};
-    res.json(await resolveDelivery(req.prisma, req.params.id, { resolution, evidence, remotePostId, permalink, by: by(req) }));
+    const { resolution, evidence, remotePostId, permalink, expectedRevision } = req.body || {};
+    res.json(await resolveDelivery(req.prisma, req.params.id, { resolution, evidence, remotePostId, permalink, expectedRevision, by: by(req) }));
   }));
 
   return router;

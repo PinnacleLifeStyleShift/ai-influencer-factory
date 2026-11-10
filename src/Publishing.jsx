@@ -26,10 +26,11 @@ export const DELIVERY_STATE = {
   simulated: ["Simulated: nothing was posted", "text-sky-300"],
   failed: ["Refused before sending (can retry)", "text-amber-300"],
   outcome_unknown: ["Outcome unknown: may have been posted", "text-red-400"],
+  conflicting_evidence: ["Conflicting evidence: review before any re-post", "text-red-400"],
   resolved_not_published: ["Not posted (confirmed by the owner)", "text-zinc-300"],
   cancelled: ["Cancelled before sending", "text-zinc-500"],
 };
-const UNCERTAIN = ["outcome_unknown", "processing", "submitting"];
+const UNCERTAIN = ["outcome_unknown", "processing", "submitting", "conflicting_evidence"];
 
 function ResolveForm({ delivery, onDone }) {
   const [f, setF] = useState({ resolution: "not_published", evidence: "", remotePostId: "", permalink: "" });
@@ -39,7 +40,9 @@ function ResolveForm({ delivery, onDone }) {
     setError("");
     if (!window.confirm("Record this outcome? It is permanent; 'not posted' allows one new attempt.")) return;
     try {
-      await api.publishing.resolve(delivery.id, f.resolution === "published" ? f : { resolution: f.resolution, evidence: f.evidence });
+      // The revision the owner reviewed: a parallel decision makes this a conflict.
+      const expectedRevision = delivery.revision;
+      await api.publishing.resolve(delivery.id, f.resolution === "published" ? { ...f, expectedRevision } : { resolution: f.resolution, evidence: f.evidence, expectedRevision });
       onDone();
     } catch (e) { setError(e.details?.fields ? Object.entries(e.details.fields).map(([k, v]) => `${k} ${v}`).join("; ") : e.message); }
   };

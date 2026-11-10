@@ -259,11 +259,11 @@ test("unknown outcome resolved by the owner: evidence required; 'not published' 
     const tiktok = (await deliveries()).TikTok;
     assert.equal((await call(app, `/api/publishing/deliveries/${tiktok.id}/check`, { method: "POST" })).body.code, "LOOKUP_UNSUPPORTED");
     assert.equal((await as(app, await roleToken("editor"), `/api/publishing/deliveries/${tiktok.id}/resolve`, { method: "POST", body: { resolution: "not_published", evidence: "Checked the TikTok account" } })).status, 403);
-    const noEvidence = await call(app, `/api/publishing/deliveries/${tiktok.id}/resolve`, { method: "POST", body: { resolution: "published" } });
+    const noEvidence = await call(app, `/api/publishing/deliveries/${tiktok.id}/resolve`, { method: "POST", body: { resolution: "published", expectedRevision: tiktok.revision } });
     assert.deepEqual(Object.keys(noEvidence.body.details.fields).sort(), ["evidence", "permalink", "remotePostId"]);
-    const r = await call(app, `/api/publishing/deliveries/${tiktok.id}/resolve`, { method: "POST", body: { resolution: "not_published", evidence: "No post in the TikTok account at 10:05 UTC" } });
+    const r = await call(app, `/api/publishing/deliveries/${tiktok.id}/resolve`, { method: "POST", body: { resolution: "not_published", evidence: "No post in the TikTok account at 10:05 UTC", expectedRevision: tiktok.revision } });
     assert.equal(r.body.state, "resolved_not_published");
-    assert.equal((await call(app, `/api/publishing/deliveries/${tiktok.id}/resolve`, { method: "POST", body: { resolution: "not_published", evidence: "again, same thing" } })).body.code, "NOT_RESOLVABLE");
+    assert.equal((await call(app, `/api/publishing/deliveries/${tiktok.id}/resolve`, { method: "POST", body: { resolution: "not_published", evidence: "again, same thing", expectedRevision: tiktok.revision } })).body.code, "RECONCILIATION_CONFLICT");
     const again = await publish(app, contentId);
     assert.equal(again.body.job.state, "published");
   }, { publishers: registry(ig, tt) });
