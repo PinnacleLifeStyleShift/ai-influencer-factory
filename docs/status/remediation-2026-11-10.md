@@ -99,7 +99,7 @@ Before the fix, `db-metric-intervals` failed 9 of 10 tests. The cumulative-snaps
 ## Holds and owner decisions
 
 - **Assembly and media storage** stay off until the owner approves activation, as AIF 1 requires.
-- **Partial-overlap policy:** the policy is "exclude, do not prorate, warn". Prorating would need a decision on the source granularity.
+- **Partial-overlap policy: decided by the owner on 10 November 2026.** Keep excluding readings that only partly overlap a report period, with a warning; never prorate them. This is the deployed behaviour, so no code change is needed.
 - **Release request** (if wanted), for the head of `aif-remediation`:
   - **Services:** both (api and frontend).
   - **Migrations:** the two above, additive.
