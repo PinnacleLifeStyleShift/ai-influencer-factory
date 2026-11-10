@@ -22,5 +22,6 @@ export async function assertDeliverable(prisma, contentId) {
   if (!item || item.stage !== "scheduled" || item.approvedHash !== content.approvedHash || snapshotHash(item) !== content.approvedHash) {
     throw new ApiError("APPROVAL_STALE", 409, "The approved content behind this entry has changed");
   }
+  if (item.rightsHoldAt) throw new ApiError("RIGHTS_REVIEW_REQUIRED", 409, "A reference used by this content had its rights revoked; it cannot be delivered until reviewed");
   return { content, item };
 }

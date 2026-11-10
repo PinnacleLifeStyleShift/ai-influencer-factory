@@ -2,6 +2,9 @@ import { useState, useCallback, useEffect } from "react";
 import * as api from "./api.js";
 import CharacterBible from "./CharacterBible.jsx";
 import GenerationJobs from "./GenerationJobs.jsx";
+import Measurement from "./Measurement.jsx";
+import Operations from "./Operations.jsx";
+import CampaignMoney, { MoneyStates } from "./CampaignMoney.jsx";
 import {
   LayoutDashboard, Users, CalendarDays, Megaphone, Zap,
   Plus, X, Search, Trash2, ChevronLeft, ChevronRight,
@@ -45,7 +48,7 @@ function normalizeCampaign(c) {
   return {
     id: c.id, name: c.name, brand: c.brand, platform: c.platform,
     brief: c.brief, requirements: c.requirements,
-    payout_amount: c.payoutAmount, deadline: c.deadline, status: c.status,
+    payout_amount: c.payoutAmount, deadline: c.deadline, status: c.status, currency: c.currency || "USD",
     submissions: (c.submissions || []).map(s => ({
       id: s.id, character_id: s.characterId, character_name: s.character_name || s.character?.name || "",
       submission_url: s.submissionUrl, notes: s.notes, payout: s.payout || 0,
@@ -162,15 +165,13 @@ function Avatar({ name, imageUrl, type, size = 40 }) {
 
 // ─── DASHBOARD ────────────────────────────────────────────────
 function Dashboard({ characters, content, campaigns }) {
-  const published = content.filter(c => c.status === "published");
-  const scheduled = content.filter(c => c.status === "scheduled");
   const activeCamps = campaigns.filter(c => c.status === "active");
-  const totalEarned = campaigns.reduce((s, c) => s + (c.submissions || []).reduce((a, b) => a + parseFloat(b.payout || 0), 0), 0);
-
-  const platformData = PLATFORMS.map(p => ({
-    platform: p,
-    views: content.filter(c => c.platform === p).reduce((s, c) => s + (c.views || 0), 0)
-  })).filter(d => d.views > 0);
+  // WHY from the server: only platform-confirmed posts count as published,
+  // money is shown by state (planned / invoiced / received) and measurement
+  // shows its sources; the old client-side "earned" and "views" sums had none.
+  const [summary, setSummary] = useState(null);
+  useEffect(() => { api.dashboard.get().then(setSummary).catch(() => {}); }, []);
+  const m = summary?.measurement;
 
   const typeData = CONTENT_TYPES.map(t => ({ type: t, count: content.filter(c => c.content_type === t).length })).filter(d => d.count > 0);
   const totalContent = content.length || 1;
@@ -185,26 +186,29 @@ function Dashboard({ characters, content, campaigns }) {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard label="Characters" value={characters.length} sub={`${characters.filter(c=>c.status==="active").length} active`} volt />
-        <StatCard label="Content" value={content.length} sub={`${published.length} published · ${scheduled.length} scheduled`} />
+        <StatCard label="Content" value={content.length} sub={summary ? `${summary.content.published} published (confirmed) · ${summary.content.partiallyPublished} partly · ${summary.content.scheduled} planned` : "…"} />
         <StatCard label="Active Campaigns" value={activeCamps.length} />
-        <StatCard label="Total Earned" value={`$${totalEarned.toFixed(2)}`} sub="Higgsfield Earn" volt />
+        <div className={`${css.card} p-5`}>
+          <div className="text-[10px] uppercase tracking-wider text-zinc-600 mb-2">Campaign money</div>
+          <div className="text-xs text-zinc-300 leading-relaxed">{summary ? <MoneyStates summary={summary.campaigns.money} /> : "…"}</div>
+          <div className="text-[10px] text-zinc-600 mt-1">Only money received is income</div>
+        </div>
       </div>
 
       <div className="grid grid-cols-3 gap-5">
         <div className={`${css.card} p-5 col-span-2`}>
-          <h2 style={{ fontFamily: "'Bebas Neue', sans-serif", letterSpacing: "0.1em" }} className="text-xl text-zinc-100 mb-4">PLATFORM VIEWS</h2>
-          {platformData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={180}>
-              <BarChart data={platformData} barSize={40}>
-                <XAxis dataKey="platform" tick={{ fill: "#71717a", fontSize: 12 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: "#71717a", fontSize: 11 }} axisLine={false} tickLine={false} />
-                <Tooltip contentStyle={{ background: "#13131a", border: "1px solid #2a2a3a", borderRadius: 8, color: "#f4f4f5", fontSize: 12 }} cursor={{ fill: "rgba(200,255,0,0.04)" }} />
-                <Bar dataKey="views" radius={[4,4,0,0]}>
-                  {platformData.map((_, i) => <Cell key={i} fill={i%2===0?"#C8FF00":"#FF3BFF"} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          ) : <div className="h-44 flex items-center justify-center text-zinc-600 text-sm">No published content yet</div>}
+          <h2 style={{ fontFamily: "'Bebas Neue', sans-serif", letterSpacing: "0.1em" }} className="text-xl text-zinc-100 mb-4">MEASUREMENT</h2>
+          {!m ? <div className="text-zinc-600 text-sm">…</div> : m.confirmedPosts === 0 ? (
+            <div className="h-36 flex items-center justify-center text-zinc-600 text-sm text-center">No platform-confirmed posts yet, so there is nothing to measure.</div>
+          ) : (
+            <div className="text-sm text-zinc-300 space-y-2">
+              <div>{m.confirmedPosts} confirmed post(s); <span className={m.postsWithoutReadings ? "text-amber-300" : ""}>{m.postsWithoutReadings} without any reading</span></div>
+              {Object.keys(m.sources).length === 0 ? <div className="text-zinc-500 text-xs">No readings recorded.</div> : Object.entries(m.sources).map(([src, x]) => (
+                <div key={src} className="text-xs text-zinc-400">{src === "api" ? "Platform API" : src === "manual" ? "Manual readings" : "Fixtures (not real)"}: {x.readings} reading(s), last recorded {new Date(x.lastRecordedAt).toLocaleString()}</div>
+              ))}
+              <div className="text-xs text-zinc-500">Open Measurement for period reports by source and time zone.</div>
+            </div>
+          )}
         </div>
 
         <div className={`${css.card} p-5`}>
@@ -230,7 +234,7 @@ function Dashboard({ characters, content, campaigns }) {
         {top.length === 0 ? <div className="text-zinc-600 text-sm py-6 text-center">No characters yet</div> : (
           <table className="w-full text-sm">
             <thead><tr className="border-b border-[#2a2a3a]">
-              {["Character","Niche","Followers","Views","Engagement"].map(h => (
+              {["Character","Niche","Followers*","Views*","Engagement*"].map(h => (
                 <th key={h} className="text-left pb-2 text-[10px] uppercase tracking-wider text-zinc-600 font-medium pr-4">{h}</th>
               ))}
             </tr></thead>
@@ -247,6 +251,7 @@ function Dashboard({ characters, content, campaigns }) {
             </tbody>
           </table>
         )}
+        {top.length > 0 && <p className="text-[10px] text-zinc-600 mt-2">* Typed into the character profile; no source or date. Measured numbers are under Measurement.</p>}
       </div>
     </div>
   );
@@ -699,7 +704,10 @@ function Campaigns({ campaigns, setCampaigns, characters }) {
     } catch(err) { console.error("Submit failed:", err); }
   };
 
-  const totalEarned = campaigns.reduce((s,c)=>s+(c.submissions||[]).reduce((a,b)=>a+parseFloat(b.payout||0),0),0);
+  const [moneySummary, setMoneySummary] = useState(null);
+  const [moneyOpen, setMoneyOpen] = useState(null);
+  const loadMoney = () => api.dashboard.get().then((d) => setMoneySummary(d.campaigns.money)).catch(() => {});
+  useEffect(() => { loadMoney(); }, [campaigns.length]);
   const totalSubs = campaigns.reduce((s,c)=>s+(c.submissions||[]).length,0);
   const daysLeft = d => { if(!d) return null; const diff=Math.ceil((new Date(d)-new Date())/(1000*60*60*24)); return diff; };
 
@@ -708,7 +716,7 @@ function Campaigns({ campaigns, setCampaigns, characters }) {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 style={{ fontFamily: "'Bebas Neue', sans-serif", letterSpacing: "0.1em" }} className="text-4xl text-zinc-100">CAMPAIGNS</h1>
-          <p className="text-zinc-500 text-sm mt-1">{campaigns.filter(c=>c.status==="active").length} active · ${totalEarned.toFixed(2)} earned</p>
+          <p className="text-zinc-500 text-sm mt-1">{campaigns.filter(c=>c.status==="active").length} active · planned, invoiced and received money kept separate</p>
         </div>
         <div className="flex gap-3">
           <a href="https://higgsfield.ai" target="_blank" rel="noreferrer" className={`${css.btnGhost} flex items-center gap-2`}><ExternalLink size={13}/>Higgsfield Earn</a>
@@ -719,7 +727,10 @@ function Campaigns({ campaigns, setCampaigns, characters }) {
       <div className="grid grid-cols-3 gap-4 mb-6">
         <StatCard label="Active Campaigns" value={campaigns.filter(c=>c.status==="active").length} />
         <StatCard label="Total Submissions" value={totalSubs} />
-        <StatCard label="Total Earned" value={`$${totalEarned.toFixed(2)}`} volt />
+        <div className={`${css.card} p-5`}>
+          <div className="text-[10px] uppercase tracking-wider text-zinc-600 mb-2">Money</div>
+          <div className="text-xs text-zinc-300 leading-relaxed">{moneySummary ? <MoneyStates summary={moneySummary} /> : "…"}</div>
+        </div>
       </div>
 
       {campaigns.length===0 ? (
@@ -753,16 +764,18 @@ function Campaigns({ campaigns, setCampaigns, characters }) {
                     )}
                   </div>
                   <div className="flex items-center gap-5 text-sm flex-shrink-0">
-                    {c.payout_amount&&<div className="text-center"><div className="font-mono text-[#C8FF00]">${parseFloat(c.payout_amount).toFixed(2)}</div><div className="text-[10px] text-zinc-600">payout</div></div>}
+                    {c.payout_amount&&<div className="text-center"><div className="font-mono text-[#C8FF00]">${parseFloat(c.payout_amount).toFixed(2)}</div><div className="text-[10px] text-zinc-600">planned payout</div></div>}
                     <div className="text-center"><div className="font-mono text-zinc-200">{(c.submissions||[]).length}</div><div className="text-[10px] text-zinc-600">submissions</div></div>
                     {c.deadline&&<div className="text-center"><div className={`font-mono text-xs ${dlCls}`}>{dl<0?"Expired":`${dl}d left`}</div><div className="text-[10px] text-zinc-600">{c.deadline}</div></div>}
                   </div>
                   <div className="flex gap-2 flex-shrink-0">
                     {c.status==="active"&&<button onClick={()=>setSubmitModal(c)} className={css.btnVolt+" text-xs"}>Submit Character</button>}
+                    <button onClick={()=>setMoneyOpen(moneyOpen===c.id?null:c.id)} aria-expanded={moneyOpen===c.id} className={`${css.btnGhost} text-xs`}>Money</button>
                     <button onClick={()=>{setCampForm({...c});setModal(c);}} className={`${css.btnGhost} text-xs`}>Edit</button>
                     <button onClick={async()=>{if(confirm("Delete?")){try{await api.campaigns.delete(c.id);setCampaigns(cs=>cs.filter(x=>x.id!==c.id));}catch(e){console.error(e);}}}} className={`${css.btnGhost} text-xs text-red-400 border-red-400/20 hover:border-red-400`}>Delete</button>
                   </div>
                 </div>
+                {moneyOpen===c.id && <CampaignMoney campaignId={c.id} currency={c.currency||"USD"} onChanged={loadMoney} />}
               </div>
             );
           })}
@@ -783,7 +796,7 @@ function Campaigns({ campaigns, setCampaigns, characters }) {
             </div>
             <div className="grid grid-cols-3 gap-3">
               <Select label="Platform" value={campForm.platform} onChange={e=>setC("platform",e.target.value)} options={PLATFORMS} />
-              <Input label="Payout ($)" type="number" value={campForm.payout_amount} onChange={e=>setC("payout_amount",e.target.value)} placeholder="0.00" />
+              <Input label="Planned payout (USD)" type="number" value={campForm.payout_amount} onChange={e=>setC("payout_amount",e.target.value)} placeholder="0.00" />
               <Input label="Deadline" type="date" value={campForm.deadline} onChange={e=>setC("deadline",e.target.value)} />
             </div>
             <Textarea label="Brief" value={campForm.brief} onChange={e=>setC("brief",e.target.value)} rows={3} placeholder="Campaign requirements and creative direction..." />
@@ -824,6 +837,8 @@ const NAV = [
   { id:"jobs", icon:Activity, label:"Generation Jobs" },
   { id:"calendar", icon:CalendarDays, label:"Content Calendar" },
   { id:"campaigns", icon:Megaphone, label:"Campaigns" },
+  { id:"measurement", icon:TrendingUp, label:"Measurement" },
+  { id:"operations", icon:Eye, label:"Operations" },
 ];
 
 export default function App() {
@@ -948,6 +963,8 @@ export default function App() {
               {page==="pipeline" && <PipelinePage characters={characters} />}
               {page==="jobs" && <GenerationJobs />}
               {page==="calendar" && <ContentCalendar content={content} setContent={apiSetContent} characters={characters} />}
+              {page==="measurement" && <Measurement />}
+              {page==="operations" && <Operations />}
               {page==="campaigns" && <Campaigns campaigns={campaigns} setCampaigns={apiSetCampaigns} characters={characters} />}
             </>
           )}

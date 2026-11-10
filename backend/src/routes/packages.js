@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { secureRouter } from "../lib/secureRouter.js";
 import { ApiError, routeError } from "../lib/errors.js";
 import { checkExternalUrl } from "../lib/urlSafety.js";
 import { listLimit } from "../lib/validate.js";
@@ -12,7 +12,7 @@ import { claimIsLive } from "./pipeline.js";
  * Ideas, script versions and the content package view (Package C).
  * Mounted under /api/pipeline before the pipeline router.
  */
-const router = Router();
+const router = secureRouter();
 const invalid = (msg, details) => new ApiError("VALIDATION_FAILED", 400, msg, details);
 const wrap = (label, fn) => async (req, res) => {
   try { await fn(req, res); } catch (err) { routeError(res, err, `Failed: ${label}`, label); }
@@ -21,7 +21,7 @@ const wrap = (label, fn) => async (req, res) => {
 // ─── Ideas: manual or sourced, never invented trends ─────────
 
 // POST /api/pipeline/ideas { topic, description?, platform? } — an operator's own idea
-router.post("/ideas", wrap("POST /pipeline/ideas", async (req, res) => {
+router.post("/ideas", ["edit"], wrap("POST /pipeline/ideas", async (req, res) => {
   const { topic, description, platform } = req.body || {};
   if (typeof topic !== "string" || topic.trim().length < 3 || topic.length > 200) throw invalid("topic is required (3-200 characters)");
   if (description !== undefined && (typeof description !== "string" || description.length > 2000)) throw invalid("description must be at most 2000 characters");
@@ -38,7 +38,7 @@ router.post("/ideas", wrap("POST /pipeline/ideas", async (req, res) => {
 // POST /api/pipeline/observations { topic, platform, sourceUrl, observedAt, observation }
 // WHY all required: an observation without where, when and what exactly was
 // seen cannot be checked, so it is not accepted as one.
-router.post("/observations", wrap("POST /pipeline/observations", async (req, res) => {
+router.post("/observations", ["edit"], wrap("POST /pipeline/observations", async (req, res) => {
   const { topic, platform, sourceUrl, observedAt, observation, description } = req.body || {};
   const fields = {};
   if (typeof topic !== "string" || topic.trim().length < 3 || topic.length > 200) fields.topic = "is required (3-200 characters)";
@@ -71,7 +71,7 @@ router.get("/scripts/:id/versions", wrap("GET /pipeline/scripts/:id/versions", a
 }));
 
 // PUT /api/pipeline/scripts/:id { expectedVersion, hook?, body?, callToAction?, speakingPaceWpm?, targetDurationSec?, evidence? }
-router.put("/scripts/:id", wrap("PUT /pipeline/scripts/:id", async (req, res) => {
+router.put("/scripts/:id", ["edit"], wrap("PUT /pipeline/scripts/:id", async (req, res) => {
   const { expectedVersion } = req.body || {};
   if (!Number.isInteger(expectedVersion)) throw invalid("expectedVersion (the version you edited) is required");
   const result = await req.prisma.$transaction(async (tx) => {

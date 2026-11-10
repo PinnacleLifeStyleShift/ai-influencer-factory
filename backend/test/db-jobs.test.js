@@ -193,12 +193,12 @@ test("manual resolution: owner-only, evidence required, recorded; 'not charged' 
       body: { resolution: "not_charged", evidence: "Provider dashboard shows no request" } })).status, 403, "resolution is owner-only");
 
     const ok = await call(app, `/api/generation-jobs/steps/${step.id}/resolve`, { method: "POST",
-      body: { resolution: "not_charged", evidence: "Synthetic: provider dashboard shows no charge for req-1" } });
+      body: { resolution: "not_charged", evidence: "Synthetic: provider dashboard shows no charge for req-1", expectedRevision: step.revision } });
     assert.equal(ok.body.state, "resolved_not_charged");
     assert.equal(ok.body.reconciliations[0].resolvedBy, "owner");
     assert.deepEqual(await reservationStates(), ["released"]);
     assert.equal((await call(app, `/api/generation-jobs/steps/${step.id}/resolve`, { method: "POST",
-      body: { resolution: "charged_no_result", evidence: "changing my mind afterwards" } })).body.code, "NOT_RESOLVABLE", "decided once");
+      body: { resolution: "charged_no_result", evidence: "changing my mind afterwards", expectedRevision: step.revision } })).body.code, "RECONCILIATION_CONFLICT", "decided once");
 
     assert.equal((await generate(app, item.id, "ui-manual-0001")).status, 200);
   });
@@ -214,10 +214,10 @@ test("manual 'charged with result' applies the result without buying again", opt
     await call(app, "/api/generation-jobs/recover", { method: "POST" });
     const step = (await call(app, "/api/generation-jobs")).body[0].steps[0];
     const bad = await call(app, `/api/generation-jobs/steps/${step.id}/resolve`, { method: "POST",
-      body: { resolution: "charged_with_result", evidence: "Found it in the provider dashboard", resultUrl: "http://10.0.0.1/x.png", actualCost: "-1" } });
+      body: { resolution: "charged_with_result", evidence: "Found it in the provider dashboard", resultUrl: "http://10.0.0.1/x.png", actualCost: "-1", expectedRevision: step.revision } });
     assert.deepEqual(Object.keys(bad.body.details.fields).sort(), ["actualCost", "resultUrl"]);
     const ok = await call(app, `/api/generation-jobs/steps/${step.id}/resolve`, { method: "POST",
-      body: { resolution: "charged_with_result", evidence: "Synthetic: dashboard entry req-1, billed 0.80", resultUrl: "https://example.test/gen-1.png", actualCost: "0.80" } });
+      body: { resolution: "charged_with_result", evidence: "Synthetic: dashboard entry req-1, billed 0.80", resultUrl: "https://example.test/gen-1.png", actualCost: "0.80", expectedRevision: step.revision } });
     assert.equal(ok.body.state, "resolved_charged_with_result");
     const r = (await prisma.generationReservation.findFirst());
     assert.equal(r.state, "settled");
