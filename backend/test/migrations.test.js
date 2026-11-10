@@ -99,3 +99,68 @@ test("no deploy path still uses prisma db push", opts, async () => {
   for (const [name, cmd] of Object.entries(pkg.scripts)) assert.ok(!/db push/.test(cmd), `script ${name}`);
   assert.ok(!/db push/.test(readFileSync("Dockerfile", "utf8")));
 });
+
+// ─── Release gates (owner's project prompt: migration, deployment, rollback) ──
+
+test("a partially applied (failed) migration blocks the deploy; the documented recovery restores the exact schema", opts, async () => {
+  const schema = "mig_partial";
+  assert.equal(migrateDeploy(schema).status, 0);
+  // Simulate the last migration failing halfway: one of its two ALTERs ran,
+  // and Prisma's history shows it failed (no finish time).
+  await withClient(schema, async (c) => {
+    await c.$executeRawUnsafe(`ALTER TABLE "rights_records" DROP COLUMN "revoke_reason", DROP COLUMN "revoked_at"`);
+    await c.$executeRawUnsafe(`UPDATE _prisma_migrations SET finished_at = NULL, logs = 'synthetic failure' WHERE migration_name = '20261110100000_rights_revocation'`);
+  });
+  const blocked = migrateDeploy(schema);
+  assert.notEqual(blocked.status, 0, "a failed migration must stop the deploy (the server never starts on it)");
+  assert.match(blocked.stdout + blocked.stderr, /P3009|failed migrations/i);
+
+  // Recovery (runbook): undo the partial change, mark it rolled back, deploy again.
+  const naive = run("npx", ["prisma", "migrate", "resolve", "--rolled-back", "20261110100000_rights_revocation"], schema);
+  assert.equal(naive.status, 0, naive.stderr);
+  const halfDone = migrateDeploy(schema);
+  assert.notEqual(halfDone.status, 0, "re-running over the half-applied change is refused, not silently merged");
+  await withClient(schema, async (c) => {
+    await c.$executeRawUnsafe(`ALTER TABLE "pipeline_items" DROP COLUMN "rights_hold_at", DROP COLUMN "rights_hold_reason"`);
+    await c.$executeRawUnsafe(`DELETE FROM _prisma_migrations WHERE migration_name = '20261110100000_rights_revocation' AND finished_at IS NULL`);
+  });
+  const recovered = migrateDeploy(schema);
+  assert.equal(recovered.status, 0, recovered.stdout + recovered.stderr);
+  assert.ok(schemaMatches(schema), "the recovered schema is exactly schema.prisma");
+});
+
+test("rollback compatibility: an older secure revision starts against the newest schema", opts, async () => {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const schema = "mig_rollback";
+  assert.equal(migrateDeploy(schema).status, 0);
+  // The migration set of the Package D revision (PR #5), run against the newest database.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aif-old-"));
+  fs.cpSync("prisma", path.join(dir, "prisma"), { recursive: true });
+  fs.copyFileSync("prisma.config.mjs", path.join(dir, "prisma.config.mjs"));
+  fs.symlinkSync(path.resolve("node_modules"), path.join(dir, "node_modules"));
+  for (const m of fs.readdirSync(path.join(dir, "prisma/migrations"))) if (m > "20261110040000_generation_jobs" && !m.endsWith(".toml")) fs.rmSync(path.join(dir, "prisma/migrations", m), { recursive: true });
+  const r = spawnSync(path.join(dir, "node_modules/.bin/prisma"), ["migrate", "deploy"], { cwd: dir, env: { ...process.env, DATABASE_URL: urlFor(schema) }, encoding: "utf8" });
+  fs.rmSync(dir, { recursive: true, force: true });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /No pending migrations/);
+});
+
+test("every migration after the baseline is additive (no drops, renames or NOT NULL columns without defaults)", async () => {
+  const fs = await import("node:fs");
+  const dirs = fs.readdirSync("prisma/migrations").filter((d) => d > "20260321000000_init" && !d.endsWith(".toml"));
+  // The single known data change: clearing simulated fixture scores (documented in MIGRATIONS.md).
+  const KNOWN = { "20261110030000_content_packages": [/ALTER COLUMN "trend_score" DROP NOT NULL/, /UPDATE "trends"/] };
+  const problems = [];
+  for (const d of dirs) {
+    const sql = fs.readFileSync(`prisma/migrations/${d}/migration.sql`, "utf8");
+    const allowed = KNOWN[d] || [];
+    for (const line of sql.split("\n")) {
+      if (allowed.some((re) => re.test(line))) continue;
+      if (/\bDROP\s+(TABLE|COLUMN)\b|\bRENAME\b|ALTER COLUMN .* TYPE\b/i.test(line)) problems.push(`${d}: ${line.trim()}`);
+      if (/ADD COLUMN .* NOT NULL/i.test(line) && !/DEFAULT/i.test(line)) problems.push(`${d}: NOT NULL without default: ${line.trim()}`);
+    }
+  }
+  assert.deepEqual(problems, []);
+});
