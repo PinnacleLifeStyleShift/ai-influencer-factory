@@ -262,6 +262,9 @@ model PipelineItem {
   scheduledAt      DateTime? @map("scheduled_at")
   scheduleTimezone String?   @map("schedule_timezone")
   scheduleLocal    String?   @map("schedule_local")
+  // Extra destinations for the same original (cross-post), part of the
+  // approved snapshot. One original posted to several places is one job.
+  crossPostDestinations String[] @default([]) @map("cross_post_destinations")
 
   reviewNotes   String?   @map("review_notes")
   approvedAt    DateTime? @map("approved_at")
@@ -555,4 +558,67 @@ model ExportManifest {
   @@unique([pipelineItemId, manifestHash])
   @@index([pipelineItemId])
   @@map("export_manifests")
+}
+
+/// One publication of one original (a calendar entry from an approval) to its
+/// approved destinations. Deliveries hold the per-destination truth.
+model PublishJob {
+  id             String   @id @default(cuid())
+  contentId      String   @unique @map("content_id")
+  pipelineItemId String   @map("pipeline_item_id")
+  snapshotHash   String   @map("snapshot_hash")
+  manifestHash   String   @map("manifest_hash")
+  // queued | running | awaiting_reconciliation | awaiting_confirmation |
+  // published | partially_published | simulated | failed | cancelled
+  state          String   @default("queued")
+  leaseOwner     String?  @map("lease_owner")
+  leaseExpiresAt DateTime? @map("lease_expires_at")
+  createdBy      String?  @map("created_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+  deliveries     PublishDelivery[]
+
+  @@map("publish_jobs")
+}
+
+model PublishDelivery {
+  id              String   @id @default(cuid())
+  jobId           String   @map("job_id")
+  job             PublishJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  platform        String
+  accountRef      String?  @map("account_ref")
+  // pending | submitting | processing | published | simulated | failed |
+  // outcome_unknown | cancelled | resolved_published | resolved_not_published
+  state           String   @default("pending")
+  attempt         Int      @default(0)
+  // Stable per attempt; sent as the platform's idempotency key where supported.
+  clientRef       String?  @map("client_ref")
+  remoteRequestId String?  @map("remote_request_id")
+  remotePostId    String?  @map("remote_post_id")
+  permalink       String?
+  errorCode       String?  @map("error_code")
+  simulated       Boolean  @default(false)
+  submittedAt     DateTime? @map("submitted_at")
+  confirmedAt     DateTime? @map("confirmed_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  reconciliations PublishReconciliation[]
+
+  @@unique([jobId, platform])
+  @@map("publish_deliveries")
+}
+
+model PublishReconciliation {
+  id           String   @id @default(cuid())
+  deliveryId   String   @map("delivery_id")
+  delivery     PublishDelivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  method       String   // platform_check | operator
+  resolution   String   // published | not_published | still_pending
+  evidence     String
+  remotePostId String?  @map("remote_post_id")
+  permalink    String?
+  resolvedBy   String   @map("resolved_by")
+  resolvedAt   DateTime @default(now()) @map("resolved_at")
+
+  @@index([deliveryId])
+  @@map("publish_reconciliations")
 }

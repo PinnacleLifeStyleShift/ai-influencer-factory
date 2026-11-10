@@ -26,6 +26,9 @@ import { rateLimit } from "./middleware/rateLimit.js";
 import { createGenerationGate, selectLedger } from "./services/generationGate.js";
 import { createPrismaLedger } from "./services/spendLedger.js";
 import { createMediaStore } from "./services/mediaStore.js";
+import { createPublishingGate } from "./services/publishingGate.js";
+import { defaultPublishers } from "./services/publishers.js";
+import { publishingRoutes } from "./routes/publishing.js";
 import { imageAdapters } from "./services/imageGeneration.js";
 import { videoAdapters } from "./services/videoGeneration.js";
 
@@ -33,8 +36,10 @@ import { videoAdapters } from "./services/videoGeneration.js";
  * Builds the Express app without listening, so it can be tested locally with
  * a fake Prisma client and no network access.
  */
-export function createApp({ prisma, env = process.env, gate, logRequests = true, sessions, authProvider, mediaStore } = {}) {
+export function createApp({ prisma, env = process.env, gate, logRequests = true, sessions, authProvider, mediaStore, publishers, publishFaults, publishClock } = {}) {
   const media = mediaStore || createMediaStore(env);
+  // Publishing: real platforms are not implemented; the gate fails closed.
+  const publishing = { gate: createPublishingGate({ env, publishers: publishers || defaultPublishers(env) }), faults: publishFaults || null, now: publishClock || (() => new Date()) };
   const sessionStore = sessions || createSessionStore(prisma);
   const provider = authProvider || createOwnerTokenProvider(env);
   const audit = createAuditLog(prisma);
@@ -86,6 +91,7 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
     req.prisma = prisma;
     req.generationGate = generationGate;
     req.mediaStore = media;
+    req.publishing = publishing;
     next();
   });
 
@@ -126,6 +132,7 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
   api.use("/generation-jobs", generationJobRoutes({ gate: generationGate, ledger: jobLedger }));
   api.use("/pipeline", packageRoutes);
   api.use("/pipeline", exportRoutes);
+  api.use("/publishing", publishingRoutes());
   api.use("/pipeline", pipelineRoutes);
   api.use((_req, res) => sendError(res, new ApiError("NOT_FOUND", 404, "Not found")));
 

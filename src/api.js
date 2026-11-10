@@ -157,6 +157,16 @@ export const characterImages = {
   approveRights: (imageId, recordId) => request(`/api/character-images/${imageId}/rights/approve`, { method: "POST", body: JSON.stringify({ recordId }) }),
 };
 
+// ─── Publishing (mock/simulated only until approved) ──────
+export const publishing = {
+  policy: () => request("/api/publishing/policy"),
+  jobs: (params = {}) => request(`/api/publishing/jobs?${new URLSearchParams(params)}`),
+  publish: (contentId) => request(`/api/publishing/content/${contentId}/publish`, { method: "POST", body: "{}" }),
+  recover: () => request("/api/publishing/recover", { method: "POST", body: "{}" }),
+  check: (deliveryId) => request(`/api/publishing/deliveries/${deliveryId}/check`, { method: "POST", body: "{}" }),
+  resolve: (deliveryId, data) => request(`/api/publishing/deliveries/${deliveryId}/resolve`, { method: "POST", body: JSON.stringify(data) }),
+};
+
 // ─── Generation jobs / reconciliation ─────────────────────
 export const generationJobs = {
   list: (params = {}) => {

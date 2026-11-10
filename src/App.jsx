@@ -64,7 +64,7 @@ const EYE_COLORS = ["Brown", "Blue", "Green", "Hazel", "Purple", "White", "Custo
 const CONTENT_TYPES = ["Static Image", "Animated Video", "Motion Sync Video", "Behind-the-Scenes", "Character Lore"];
 const TYPE_COLORS = { "Human": "#60a5fa", "Mammal Hybrid": "#fb923c", "Reptile Hybrid": "#4ade80", "Alien / Sci-Fi": "#c084fc", "Fantasy Creature": "#f472b6" };
 const TYPE_DOT = { "Static Image": "#C8FF00", "Animated Video": "#FF3BFF", "Motion Sync Video": "#3BFFFF", "Behind-the-Scenes": "#fb923c", "Character Lore": "#c084fc" };
-const STATUS_CLS = { cancelled: "text-zinc-500 bg-zinc-700/30 line-through", published: "text-[#C8FF00] bg-[#C8FF00]/10", scheduled: "text-blue-300 bg-blue-500/10", draft: "text-zinc-500 bg-zinc-700/30", active: "text-[#C8FF00] bg-[#C8FF00]/10", closed: "text-zinc-500 bg-zinc-700/30" };
+const STATUS_CLS = { partially_published: "text-amber-300 bg-amber-500/10", cancelled: "text-zinc-500 bg-zinc-700/30 line-through", published: "text-[#C8FF00] bg-[#C8FF00]/10", scheduled: "text-blue-300 bg-blue-500/10", draft: "text-zinc-500 bg-zinc-700/30", active: "text-[#C8FF00] bg-[#C8FF00]/10", closed: "text-zinc-500 bg-zinc-700/30" };
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
@@ -605,7 +605,7 @@ function ContentCalendar({ content, setContent, characters }) {
                 <div className="w-2 h-2 rounded-full flex-shrink-0" style={{background:TYPE_DOT[c.content_type]||"#71717a"}}/>
                 <div className="flex-1 min-w-0">
                   <div className="text-zinc-100 text-sm font-medium truncate">{c.title}</div>
-                  <div className="text-zinc-600 text-xs">{c.character_name} · {c.platform} · <span className={STATUS_CLS[c.status]||""}>{c.status==="scheduled"?"scheduled (planned, not published)":c.status}</span></div>
+                  <div className="text-zinc-600 text-xs">{c.character_name} · {c.platform} · <span className={STATUS_CLS[c.status]||""}>{c.status==="scheduled"?"scheduled (planned, not published)":c.status==="partially_published"?"partially published (some destinations)":c.status}</span></div>
                   {c.scheduled_at&&<div className="text-zinc-500 text-xs">{new Date(c.scheduled_at).toLocaleString("en-US",{timeZone:c.schedule_timezone,dateStyle:"medium",timeStyle:"short"})} {c.schedule_timezone} · {new Date(c.scheduled_at).toISOString().slice(0,16).replace("T"," ")} UTC</div>}
                   {c.status==="cancelled"&&c.cancel_reason&&<div className="text-zinc-500 text-xs">Cancelled: {c.cancel_reason}</div>}
                   {c.motion_prompt&&<div className="text-zinc-500 text-xs font-mono mt-0.5 truncate">"{c.motion_prompt}"</div>}

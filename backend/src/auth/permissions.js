@@ -7,7 +7,7 @@
  * rights alone never allow a paid provider call.
  */
 export const ROLE_PERMISSIONS = Object.freeze({
-  owner: ["read", "edit", "approve", "schedule", "export", "references", "generate", "spend", "admin"],
+  owner: ["read", "edit", "approve", "schedule", "export", "publish", "references", "generate", "spend", "admin"],
   editor: ["read", "edit", "schedule", "export", "references", "generate"],
   reviewer: ["read", "approve"],
 });
@@ -28,6 +28,9 @@ const RULES = [
   { method: "POST", path: /^\/pipeline\/[^/]+\/(schedule|cancel-schedule)$/, needs: ["schedule"] },
   // Export packages approved content for distribution; reading exports is open.
   { method: "POST", path: /^\/pipeline\/[^/]+\/exports$/, needs: ["export"] },
+  // Posting is irreversible and the owner's decision; reconciliation too.
+  { method: "POST", path: /^\/publishing\/content\/[^/]+\/publish$/, needs: ["publish"] },
+  { method: "POST", path: /^\/publishing\//, needs: ["admin"] },
   { method: "GET", path: /^\/system\//, needs: ["admin"] },
   { method: "GET", path: /^\/audit-events/, needs: ["admin"] },
   // Money and recovery decisions are the owner's.

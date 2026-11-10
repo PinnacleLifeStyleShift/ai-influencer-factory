@@ -37,3 +37,4 @@ is no longer used at build time, at startup, or in tests.
 | `20261110030000_content_packages` | Adds idea kinds/observation fields, `script_versions`, package fields on `pipeline_items`; makes `trends.trend_score` nullable and clears the random scores on simulated fixture rows (the only data change) |
 | `20261110040000_generation_jobs` | Additive only: `generation_jobs`, `generation_steps`, `reconciliation_records`; `currency` (default `USD`), `price_version`, `cap_timezone` on `generation_reservations` |
 | `20261110050000_review_calendar_export` | Additive only: schedule instant/zone/wall time on `pipeline_items`; schedule and cancellation columns on `content`; `export_manifests` table |
+| `20261110060000_publishing` | Additive only: `cross_post_destinations` on `pipeline_items`; `publish_jobs`, `publish_deliveries`, `publish_reconciliations` |

@@ -1,6 +1,6 @@
 # Current baseline
 
-Recorded 2026-11-09. Updated for branch `pkg-e-review-calendar-export` (stacked on `pkg-d-durable-jobs` → `pkg-c-content-packages` → `pkg-b-character-bible` → `pkg-a-identity-baseline` → PR #1).
+Recorded 2026-11-09. Updated for branch `pkg-f-publishing-interfaces` (stacked on `pkg-e-review-calendar-export` → `pkg-d-durable-jobs` → `pkg-c-content-packages` → `pkg-b-character-bible` → `pkg-a-identity-baseline` → PR #1).
 No secret values appear here; Railway variables are listed by name only.
 
 Evidence labels:
@@ -45,16 +45,17 @@ Evidence labels:
 | `20261110020000_character_versions_rights` | Versions, rights, pins, recorded inputs (additive), Package B | TESTED LOCALLY, HOSTED CI at `1cfcf9d` |
 | `20261110030000_content_packages` | Idea kinds, script versions, package fields; nullable trend score (fixture scores cleared), Package C | TESTED LOCALLY, HOSTED CI at `7e64744` |
 | `20261110040000_generation_jobs` | Jobs, steps, reconciliation records; pricing context on reservations (additive), Package D | TESTED LOCALLY, HOSTED CI at `0725bc8` |
-| `20261110050000_review_calendar_export` | Schedule instant/zone, calendar cancellation, `export_manifests` (additive), Package E | TESTED LOCALLY |
+| `20261110050000_review_calendar_export` | Schedule instant/zone, calendar cancellation, `export_manifests` (additive), Package E | TESTED LOCALLY, HOSTED CI at `3504065` |
+| `20261110060000_publishing` | Cross-post destinations; publish jobs, deliveries, reconciliations (additive), publishing interfaces | TESTED LOCALLY |
 
 Deploy path: `npm start` → `scripts/migrate-deploy.mjs`. It verifies a pre-migration database is identical to the baseline before recording it, and refuses otherwise. Rollback with Railway's button alone does not work after migration (the old image's `db push` refuses); this was re-tested at `10704fa`. See the deployment checklist doc.
 
 ## Tests at this branch (TESTED LOCALLY)
 
-- Backend `npm test`: 141/141 pass, 0 skipped.
+- Backend `npm test`: 159/159 pass, 0 skipped.
 - Frontend vitest: 10/10 pass.
 - `vite build` passes.
-- Playwright UI auth, character-bible, content-package, generation-jobs and review/export (desktop and 390 px phone) checks: pass.
+- Playwright UI auth, character-bible, content-package, generation-jobs, review/export (desktop and 390 px phone) and publishing (simulation) checks: pass.
 - `npm audit`: 0 vulnerabilities in both packages.
 - Both workflows run on this branch's PR; see its checks for HOSTED CI results at the exact head.
 
@@ -149,6 +150,22 @@ Not run here: Docker image builds (no Docker daemon in the sandbox; covered by t
 | Mobile/desktop review accessible; keyboard and error flows | Met for the review panel (responsive shell, labelled controls, alerts, keyboard cancel) | review-export e2e; screenshots |
 | Export with real media | **Not met.** Needs approved private media storage; default store is disabled (`MEDIA_STORE_NOT_CONFIGURED`) | ADR 0006 |
 | Media bundled into one download | **Not met.** Manifest lists URLs + checksums; bundling needs storage | ADR 0006 |
+
+## Publishing interfaces (brief section 10, first half)
+
+| Requirement | Status | Evidence |
+| --- | --- | --- |
+| Interfaces and mock tests now; live publisher disabled | Met: adapter contract + gate; no real adapter; every platform "not implemented" by default | db-publishing gate tests; ADR 0007 |
+| Activation needs approved account, verified official API eligibility, scopes, content/destination approval | Met as gate conditions (`LIVE_PUBLISHING`, `APPROVED_PUBLISH_DESTINATIONS`, `PUBLISH_ACCOUNTS` with scopes, eligibility date, approval reference) plus approved snapshot, due time, verified export | db-publishing; mutation checks |
+| Destination-specific delivery, remote post id, permalink | Met (one delivery row per destination) | db-publishing cross-post test |
+| Uncertain outcomes and reconciliation | Met (unknown blocks re-posting; platform check; owner resolution with evidence; recovery after process death at three points) | db-publishing; mutation checks |
+| One cross-platform job is not several originals | Met (one job per calendar entry; destinations are deliveries) | db-publishing; publishing e2e |
+| Partial success never retries successful destinations | Met | db-publishing partial-success test; mutation check |
+| Simulation never claims a post | Met (state `simulated`, content stays scheduled) | db-publishing; publishing e2e |
+| Spending approval for paid posting | Not applicable yet: no paid path exists | ADR 0007 |
+| Real platform adapters | **Not met by design.** Owner decisions: accounts, official API access, scopes | ADR 0007 |
+| Automatic posting at the approved time | **Not built.** Manual owner action at/after the time; a worker would reuse `publishContent` | ADR 0007 |
+| Measurement (metrics sources, periods, campaign money states) | **Not started.** Next package | ADR 0007 |
 
 ## Repository instructions
 

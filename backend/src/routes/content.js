@@ -151,7 +151,7 @@ router.delete("/:id", async (req, res) => {
   try {
     const existing = await req.prisma.content.findUnique({ where: { id: req.params.id } });
     if (!existing) return sendError(res, new ApiError("NOT_FOUND", 404, "Content not found"));
-    if (existing.scheduleKey && existing.status === "scheduled") {
+    if (existing.scheduleKey && ["scheduled", "partially_published", "published"].includes(existing.status)) {
       throw new ApiError("USE_CANCEL_SCHEDULE", 409, "Cancel the schedule (POST /api/pipeline/:id/cancel-schedule) before deleting it");
     }
     await req.prisma.content.delete({ where: { id: req.params.id } });

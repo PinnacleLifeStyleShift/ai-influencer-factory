@@ -32,6 +32,11 @@ export function snapshotOf(item) {
     const v = item[f];
     if (v !== null && v !== undefined) snap[f] = v instanceof Date ? v.toISOString() : v;
   }
+  // Cross-post destinations (publishing): approval names every place the
+  // original may go. Added only when non-empty, like the schedule.
+  if (Array.isArray(item.crossPostDestinations) && item.crossPostDestinations.length) {
+    snap.crossPostDestinations = [...item.crossPostDestinations].sort();
+  }
   return snap;
 }
 
@@ -40,6 +45,11 @@ export function snapshotHash(item) {
 }
 
 /** Media type is decided by what will actually be posted: video wins over its source still. */
+/** Every destination this approved item may be delivered to, primary first. */
+export function destinationsOf(item) {
+  return [item.platform, ...(item.crossPostDestinations || [])].filter((d, i, a) => d && a.indexOf(d) === i);
+}
+
 export function mediaTypeOf(item) {
   if (item.videoUrl) return "video";
   if (item.imageUrl) return "image";

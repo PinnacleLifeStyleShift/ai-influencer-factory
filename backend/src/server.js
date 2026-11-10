@@ -12,6 +12,11 @@ const app = createApp({ prisma });
 import("./services/generationJobs.js")
   .then(({ recoverAbandoned }) => recoverAbandoned(prisma, app.locals.jobLedger))
   .catch((e) => console.error("startup job recovery failed:", e?.message));
+// Publish jobs left running: a delivery that was being sent becomes "outcome
+// unknown" (never re-posted automatically).
+import("./services/publishing.js")
+  .then(({ recoverPublishJobs }) => recoverPublishJobs(prisma))
+  .catch((e) => console.error("startup publish recovery failed:", e?.message));
 
 if (!process.env.OWNER_API_TOKEN || process.env.OWNER_API_TOKEN.length < MIN_TOKEN_LENGTH) {
   console.warn(`⚠️  OWNER_API_TOKEN is unset or shorter than ${MIN_TOKEN_LENGTH} chars: all /api routes will refuse requests.`);

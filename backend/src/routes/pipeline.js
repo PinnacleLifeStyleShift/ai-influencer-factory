@@ -23,6 +23,7 @@ import { measurePackage } from "../services/shotPlan.js";
 import { resolveLocal, offsetLabel } from "../lib/zonedTime.js";
 import { checkClaims } from "../services/claims.js";
 import { createJob } from "../services/generationJobs.js";
+import { settleJob } from "../services/publishing.js";
 import { isProcessDeath } from "../services/generationGate.js";
 
 const router = Router();
@@ -49,6 +50,11 @@ function optionalString(body, key, max = 5000) {
 function assertNotScheduled(item) {
   if (item.stage === "scheduled") {
     throw new ApiError("ALREADY_SCHEDULED", 409, "Scheduled items cannot be changed; their approved revision is locked");
+  }
+  // WHY: published content is out in the world; editing the record would make
+  // it disagree with what was posted.
+  if (item.stage === "published") {
+    throw new ApiError("ALREADY_PUBLISHED", 409, "Published items cannot be changed; create a new item instead");
   }
 }
 
@@ -604,6 +610,13 @@ router.patch("/:id", handle("PATCH /pipeline/:id", async (req, res) => {
     changes.exportSettings = { format: e.format, aspectRatio: e.aspectRatio, burnInCaptions: e.burnInCaptions };
   }
   if (body.schedule !== undefined) Object.assign(changes, parseSchedule(body.schedule));
+  if (body.crossPostDestinations !== undefined) {
+    const list = body.crossPostDestinations;
+    if (!Array.isArray(list) || list.some((d) => !DESTINATIONS.includes(d)) || new Set(list).size !== list.length) {
+      throw invalid(`crossPostDestinations must be a list of distinct destinations from ${DESTINATIONS.join(", ")}`);
+    }
+    changes.crossPostDestinations = [...list].sort();
+  }
   if (body.revision !== undefined && !Number.isInteger(body.revision)) throw invalid("revision must be an integer");
 
   const item = await req.prisma.pipelineItem.findUnique({ where: { id: req.params.id } });
@@ -637,6 +650,7 @@ router.delete("/:id", handle("DELETE /pipeline/:id", async (req, res) => {
   const item = await req.prisma.pipelineItem.findUnique({ where: { id: req.params.id } });
   if (!item) throw notFound();
   if (item.stage === "scheduled") throw new ApiError("ALREADY_SCHEDULED", 409, "Cancel the schedule before deleting this item");
+  if (item.stage === "published") throw new ApiError("ALREADY_PUBLISHED", 409, "Published items are kept as the record of what was posted");
   await req.prisma.pipelineItem.delete({ where: { id: req.params.id } });
   res.json({ success: true });
 }));
@@ -845,12 +859,19 @@ router.post("/:id/cancel-schedule", handle("POST /pipeline/:id/cancel-schedule",
     });
     if (moved.count !== 1) throw new ApiError("REVISION_CONFLICT", 409, "The item changed meanwhile; reload and retry");
     if (item.contentId) {
-      await tx.content.updateMany({
-        where: { id: item.contentId, status: "scheduled", cancelledAt: null },
-        data: { status: "cancelled", cancelledAt: new Date(), cancelledBy: req.principal?.role || "unknown", cancelReason: reason.trim() },
+      const stamp = { cancelledAt: new Date(), cancelledBy: req.principal?.role || "unknown", cancelReason: reason.trim() };
+      await tx.content.updateMany({ where: { id: item.contentId, status: "scheduled", cancelledAt: null }, data: { status: "cancelled", ...stamp } });
+      // Partly published: what is out stays out (and stays recorded); the
+      // remaining destinations are stopped.
+      await tx.content.updateMany({ where: { id: item.contentId, status: "partially_published", cancelledAt: null }, data: stamp });
+      await tx.publishDelivery.updateMany({
+        where: { job: { contentId: item.contentId }, state: { in: ["pending", "failed", "resolved_not_published"] } },
+        data: { state: "cancelled" },
       });
     }
   });
+  const job = item.contentId ? await prisma.publishJob.findUnique({ where: { contentId: item.contentId } }) : null;
+  if (job) await settleJob(prisma, job.id);
   const updated = await prisma.pipelineItem.findUnique({ where: { id: item.id }, include: ITEM_INCLUDE });
   const content = item.contentId ? await prisma.content.findUnique({ where: { id: item.contentId } }) : null;
   res.json({ success: true, pipelineItem: serializeItem(updated), content });
