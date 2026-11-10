@@ -81,7 +81,8 @@ export default function Publishing({ item, onChanged }) {
 
   const act = async (fn, done) => {
     setBusy(true); setMessage("");
-    try { await fn(); setMessage(done); } catch (e) {
+    // Reload before announcing, so "finished" never sits beside stale rows.
+    try { await fn(); await load().catch(() => {}); setMessage(done); } catch (e) {
       setMessage(e.details?.missing ? `${e.message}. Missing: ${e.details.missing.join("; ")}` : e.message);
     } finally { setBusy(false); await load().catch(() => {}); onChanged?.(); }
   };

@@ -26,6 +26,7 @@ import { rateLimit } from "./middleware/rateLimit.js";
 import { createGenerationGate, selectLedger } from "./services/generationGate.js";
 import { createPrismaLedger } from "./services/spendLedger.js";
 import { createMediaStore } from "./services/mediaStore.js";
+import { configFindings, readiness } from "./services/opsChecks.js";
 import { createPublishingGate } from "./services/publishingGate.js";
 import { defaultPublishers } from "./services/publishers.js";
 import { publishingRoutes } from "./routes/publishing.js";
@@ -73,6 +74,12 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
   // Public, non-sensitive health endpoints.
   app.get("/", (_req, res) => res.json({ status: "ok", service: "ai-influencer-factory-api" }));
   app.get("/health", (_req, res) => res.json({ status: "ok" }));
+  // Readiness for deploy health checks: the database answers and every
+  // committed migration is applied. Discloses only a status word.
+  app.get("/ready", async (_req, res) => {
+    const r = await readiness(prisma);
+    res.status(r.ready ? 200 : 503).json({ status: r.ready ? "ready" : "not_ready" });
+  });
 
   // Everything under /api requires a session, except creating one.
   const api = express.Router();
@@ -123,6 +130,8 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
   });
 
   // Read-only view of what the spending gate would allow (no secrets).
+  // Configuration audit by setting NAME only (admin via the permission table).
+  api.get("/system/config-check", (_req, res) => res.json({ findings: configFindings(env) }));
   api.get("/system/generation-policy", (req, res) => res.json(req.generationGate.describe()));
 
   api.use("/auth", authRoutes({ sessions: sessionStore }));

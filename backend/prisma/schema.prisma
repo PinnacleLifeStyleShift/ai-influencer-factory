@@ -150,6 +150,14 @@ model Campaign {
   // Currency of the planned payout (Package G). Planned, invoiced and received
   // money are separate records; nothing here is "earned" by itself.
   currency        String   @default("USD")
+  // A real, authorized sponsor relationship (brief section 3): agreement
+  // reference, who the sponsor is, when it was authorized and the paid-
+  // promotion disclosure. Required before characters are submitted.
+  sponsorLegalName    String?   @map("sponsor_legal_name")
+  sponsorAgreementRef String?   @map("sponsor_agreement_ref")
+  sponsorAuthorizedAt DateTime? @map("sponsor_authorized_at")
+  sponsorAuthorizedBy String?   @map("sponsor_authorized_by")
+  sponsorDisclosure   String?   @map("sponsor_disclosure")
   invoices        CampaignInvoice[]
   receipts        CampaignReceipt[]
 

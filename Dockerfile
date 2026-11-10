@@ -19,5 +19,7 @@ ENV NODE_ENV=production
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
 COPY --from=build /app/dist ./dist
+# WHY non-root: serving static files needs no privileges.
+USER node
 EXPOSE 3000
 CMD ["sh", "-c", "exec node_modules/.bin/serve dist -s -l ${PORT:-3000}"]

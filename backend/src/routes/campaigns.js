@@ -85,6 +85,13 @@ router.put("/:id", async (req, res) => {
     for (const [bodyKey, prismaKey] of Object.entries(fields)) {
       if (req.body[bodyKey] !== undefined) data[prismaKey] = req.body[bodyKey];
     }
+    // A different sponsor needs its own authorization.
+    if (data.brand !== undefined) {
+      const current = await req.prisma.campaign.findUnique({ where: { id: req.params.id } });
+      if (current && (current.brand ?? null) !== (data.brand ?? null)) {
+        Object.assign(data, { sponsorLegalName: null, sponsorAgreementRef: null, sponsorAuthorizedAt: null, sponsorAuthorizedBy: null, sponsorDisclosure: null });
+      }
+    }
     const campaign = await req.prisma.campaign.update({
       where: { id: req.params.id },
       data,
@@ -109,6 +116,32 @@ router.delete("/:id", async (req, res) => {
   }
 });
 
+// ─── Sponsor authorization (brief section 3) ────────────────
+// WHY: promoting a brand needs a real, authorized relationship and a paid-
+// promotion disclosure. A campaign without one cannot take submissions.
+const DISCLOSURE_RE = /(#ad\b|#sponsored\b|paid partnership|paid promotion|sponsored by|#partner\b)/i;
+router.post("/:id/sponsor-authorization", async (req, res) => {
+  try {
+    const { sponsorLegalName, agreementReference, authorizedAt, disclosure } = req.body || {};
+    const fields = {};
+    if (typeof sponsorLegalName !== "string" || sponsorLegalName.trim().length < 2 || sponsorLegalName.length > 200) fields.sponsorLegalName = "is required (the sponsor's legal name)";
+    if (typeof agreementReference !== "string" || agreementReference.trim().length < 3 || agreementReference.length > 200) fields.agreementReference = "is required (where the signed agreement is kept)";
+    const at = typeof authorizedAt === "string" ? new Date(authorizedAt) : null;
+    if (!at || Number.isNaN(at.getTime()) || at > new Date()) fields.authorizedAt = "is required and cannot be in the future";
+    if (typeof disclosure !== "string" || !DISCLOSURE_RE.test(disclosure) || disclosure.length > 300) fields.disclosure = "must contain a clear paid-promotion label (e.g. #ad, Paid partnership with …)";
+    if (Object.keys(fields).length) throw new ApiError("VALIDATION_FAILED", 400, "Sponsor authorization is incomplete", { fields });
+    const exists = await req.prisma.campaign.findUnique({ where: { id: req.params.id } });
+    if (!exists) return sendError(res, new ApiError("NOT_FOUND", 404, "Campaign not found"));
+    const campaign = await req.prisma.campaign.update({ where: { id: req.params.id }, data: {
+      sponsorLegalName: sponsorLegalName.trim(), sponsorAgreementRef: agreementReference.trim(), sponsorAuthorizedAt: at,
+      sponsorAuthorizedBy: req.principal?.role || "unknown", sponsorDisclosure: disclosure.trim(),
+    } });
+    res.json(campaign);
+  } catch (err) {
+    return routeError(res, err, "Failed to record sponsor authorization", "POST /campaigns/:id/sponsor-authorization");
+  }
+});
+
 // ─── Money: planned / invoiced / received (separate states) ──
 const by = (req) => req.principal?.role || "unknown";
 const plainMoney = (r) => ({ ...r, amountMicros: Number(r.amountMicros) });
@@ -129,6 +162,11 @@ router.post("/:id/receipts/:receiptId/reverse", moneyRoute("POST /campaigns/:id/
 router.post("/:id/submissions", async (req, res) => {
   try {
     validateBody(req.body, SCHEMAS.submission);
+    const campaign = await req.prisma.campaign.findUnique({ where: { id: req.params.id } });
+    if (!campaign) return sendError(res, new ApiError("NOT_FOUND", 404, "Campaign not found"));
+    if (!campaign.sponsorAuthorizedAt || !campaign.sponsorAgreementRef || !campaign.sponsorDisclosure) {
+      throw new ApiError("SPONSOR_AUTHORIZATION_REQUIRED", 409, "Record the sponsor's authorization (agreement and paid-promotion disclosure) before submitting characters");
+    }
     const submission = await req.prisma.campaignSubmission.create({
       data: {
         campaignId: req.params.id,

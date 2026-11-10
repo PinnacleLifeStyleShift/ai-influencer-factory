@@ -106,6 +106,7 @@ try {
   panel = await openPanel();
   await panel.getByRole("button", { name: "Publish now" }).click();
   await panel.getByRole("status").getByText("Publish run finished; see each destination").waitFor();
+  await panel.getByText("Simulated: nothing was posted").first().waitFor();
   assert.equal(await panel.getByText("Simulated: nothing was posted").count(), 2);
   await panel.getByText("Job: simulated · nothing left to send").waitFor();
   assert.equal(await panel.getByRole("button", { name: "Publish now" }).isDisabled(), true, "no second run");

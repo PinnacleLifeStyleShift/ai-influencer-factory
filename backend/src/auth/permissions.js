@@ -32,7 +32,7 @@ const RULES = [
   { method: "POST", path: /^\/publishing\/content\/[^/]+\/publish$/, needs: ["publish"] },
   { method: "POST", path: /^\/publishing\//, needs: ["admin"] },
   // Money records and provider refreshes are the owner's.
-  { method: "POST", path: /^\/campaigns\/[^/]+\/(invoices|receipts)/, needs: ["admin"] },
+  { method: "POST", path: /^\/campaigns\/[^/]+\/(invoices|receipts|sponsor-authorization)/, needs: ["admin"] },
   { method: "POST", path: /^\/metrics\/refresh$/, needs: ["admin"] },
   { method: "GET", path: /^\/system\//, needs: ["admin"] },
   { method: "GET", path: /^\/audit-events/, needs: ["admin"] },
