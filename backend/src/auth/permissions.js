@@ -7,8 +7,8 @@
  * rights alone never allow a paid provider call.
  */
 export const ROLE_PERMISSIONS = Object.freeze({
-  owner: ["read", "edit", "approve", "schedule", "references", "generate", "spend", "admin"],
-  editor: ["read", "edit", "schedule", "references", "generate"],
+  owner: ["read", "edit", "approve", "schedule", "export", "references", "generate", "spend", "admin"],
+  editor: ["read", "edit", "schedule", "export", "references", "generate"],
   reviewer: ["read", "approve"],
 });
 
@@ -25,7 +25,9 @@ const RULES = [
   { method: "POST", path: /^\/character-images\/[^/]+\/rights\/approve$/, needs: ["admin"] },
   { method: "POST", path: /^\/character-images\/[^/]+\/rights$/, needs: ["references"] },
   { method: "POST", path: /^\/pipeline\/[^/]+\/(approve|reject)$/, needs: ["approve"] },
-  { method: "POST", path: /^\/pipeline\/[^/]+\/schedule$/, needs: ["schedule"] },
+  { method: "POST", path: /^\/pipeline\/[^/]+\/(schedule|cancel-schedule)$/, needs: ["schedule"] },
+  // Export packages approved content for distribution; reading exports is open.
+  { method: "POST", path: /^\/pipeline\/[^/]+\/exports$/, needs: ["export"] },
   { method: "GET", path: /^\/system\//, needs: ["admin"] },
   { method: "GET", path: /^\/audit-events/, needs: ["admin"] },
   // Money and recovery decisions are the owner's.

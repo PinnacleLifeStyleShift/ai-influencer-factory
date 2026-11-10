@@ -18,9 +18,20 @@ export const PUBLISH_FIELDS = Object.freeze([
   "scriptVersionId", "shotMedia", "disclosure", "exportSettings",
 ]);
 
+// The destination schedule is publish-relevant too (Package E): approval is
+// for "this content, there, at this instant in this zone". WHY version-bound:
+// changing the time is a change to what was approved, so it needs a new
+// approval; there is no separate, weaker "reschedule" permission.
+// Added only when set, so items without a schedule keep their earlier hash.
+export const SCHEDULE_FIELDS = Object.freeze(["scheduledAt", "scheduleTimezone"]);
+
 export function snapshotOf(item) {
   const snap = { pipelineItemId: item.id, revision: item.revision };
   for (const f of PUBLISH_FIELDS) snap[f] = item[f] ?? null;
+  for (const f of SCHEDULE_FIELDS) {
+    const v = item[f];
+    if (v !== null && v !== undefined) snap[f] = v instanceof Date ? v.toISOString() : v;
+  }
   return snap;
 }
 

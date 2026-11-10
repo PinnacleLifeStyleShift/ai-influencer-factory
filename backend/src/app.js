@@ -10,6 +10,7 @@ import campaignRoutes from "./routes/campaigns.js";
 import dashboardRoutes from "./routes/dashboard.js";
 import pipelineRoutes from "./routes/pipeline.js";
 import packageRoutes from "./routes/packages.js";
+import exportRoutes from "./routes/exports.js";
 import { generationJobRoutes } from "./routes/generationJobs.js";
 
 import { buildCorsOptions } from "./lib/cors.js";
@@ -24,6 +25,7 @@ import { listLimit } from "./lib/validate.js";
 import { rateLimit } from "./middleware/rateLimit.js";
 import { createGenerationGate, selectLedger } from "./services/generationGate.js";
 import { createPrismaLedger } from "./services/spendLedger.js";
+import { createMediaStore } from "./services/mediaStore.js";
 import { imageAdapters } from "./services/imageGeneration.js";
 import { videoAdapters } from "./services/videoGeneration.js";
 
@@ -31,7 +33,8 @@ import { videoAdapters } from "./services/videoGeneration.js";
  * Builds the Express app without listening, so it can be tested locally with
  * a fake Prisma client and no network access.
  */
-export function createApp({ prisma, env = process.env, gate, logRequests = true, sessions, authProvider } = {}) {
+export function createApp({ prisma, env = process.env, gate, logRequests = true, sessions, authProvider, mediaStore } = {}) {
+  const media = mediaStore || createMediaStore(env);
   const sessionStore = sessions || createSessionStore(prisma);
   const provider = authProvider || createOwnerTokenProvider(env);
   const audit = createAuditLog(prisma);
@@ -82,6 +85,7 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
   api.use((req, _res, next) => {
     req.prisma = prisma;
     req.generationGate = generationGate;
+    req.mediaStore = media;
     next();
   });
 
@@ -121,6 +125,7 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
   api.use("/dashboard", dashboardRoutes);
   api.use("/generation-jobs", generationJobRoutes({ gate: generationGate, ledger: jobLedger }));
   api.use("/pipeline", packageRoutes);
+  api.use("/pipeline", exportRoutes);
   api.use("/pipeline", pipelineRoutes);
   api.use((_req, res) => sendError(res, new ApiError("NOT_FOUND", 404, "Not found")));
 

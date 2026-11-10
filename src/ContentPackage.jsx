@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import * as api from "./api.js";
+import ReviewExport from "./ReviewExport.jsx";
 
 /**
  * Content package: storyboard, script (versioned), media per shot, caption,
@@ -81,7 +82,7 @@ export default function ContentPackage({ itemId, onClose, onChanged }) {
         <button className={ghost} onClick={onClose}>Close</button>
       </div>
 
-      <div className="grid grid-cols-3 gap-4 mb-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
         <div>
           <Check title="Planned length" good={duration?.planned.withinTolerance}>
             {duration?.planned.actualSec}s planned for a {duration?.planned.targetSec}s target (±{duration?.planned.toleranceSec}s)
@@ -89,7 +90,7 @@ export default function ContentPackage({ itemId, onClose, onChanged }) {
           <Check title="Measured length" good={duration?.measured.complete && duration?.measured.verified && duration?.measured.withinTolerance}>
             {duration?.measured.actualSec}s from attached clips ·{" "}
             {duration?.measured.complete ? "all shots covered" : "shots missing or too short"} ·{" "}
-            {duration?.measured.verified ? "lengths reported by the source" : "lengths not verified"}
+            {duration?.measured.verified ? "lengths reported or measured" : "lengths not verified"}
           </Check>
         </div>
         <div>
@@ -122,8 +123,11 @@ export default function ContentPackage({ itemId, onClose, onChanged }) {
         </div>
       </div>
 
-      <div className="text-xs text-zinc-400 mb-2">Storyboard</div>
-      <table className="w-full text-[11px] text-zinc-300 mb-4">
+      <ReviewExport item={item} hasShots={(item.shotMedia || []).length > 0} onChanged={() => { load().catch(() => {}); onChanged?.(); }} />
+
+      <div className="text-xs text-zinc-400 mb-2 mt-4">Storyboard</div>
+      <div className="overflow-x-auto">
+      <table className="w-full min-w-[640px] text-[11px] text-zinc-300 mb-4">
         <thead><tr className="text-left text-zinc-600">
           <th>#</th><th>Length</th><th>Scene / action</th><th>Dialogue</th><th>Caption</th><th>Audio</th><th>Clip</th><th />
         </tr></thead>
@@ -137,7 +141,7 @@ export default function ContentPackage({ itemId, onClose, onChanged }) {
               <td className="text-zinc-400">{s.caption}</td>
               <td className="text-zinc-500">{s.audio.kind}; music {s.audio.music}</td>
               <td className={s.mediaStatus?.status === "ok" ? "text-green-400" : "text-amber-300"}>
-                {s.media ? `${s.media.durationSec}s (${s.media.durationSource === "provider_reported" ? "reported" : "requested"})` : "none"}
+                {s.media ? `${s.media.durationSec}s (${{ provider_reported: "reported", measured: "measured from file" }[s.media.durationSource] || "requested"})` : "none"}
                 {s.mediaStatus?.shortBySec > 0 && <div>short by {s.mediaStatus.shortBySec}s</div>}
               </td>
               <td><button className={ghost} disabled={busy} onClick={() => generateShot(s.index)}>{s.media ? "Regenerate" : "Generate clip"}</button></td>
@@ -145,6 +149,7 @@ export default function ContentPackage({ itemId, onClose, onChanged }) {
           ))}
         </tbody>
       </table>
+      </div>
 
       {draft && (
         <div>

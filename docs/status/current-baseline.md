@@ -1,6 +1,6 @@
 # Current baseline
 
-Recorded 2026-11-09. Updated for branch `pkg-d-durable-jobs` (stacked on `pkg-c-content-packages` → `pkg-b-character-bible` → `pkg-a-identity-baseline` → PR #1).
+Recorded 2026-11-09. Updated for branch `pkg-e-review-calendar-export` (stacked on `pkg-d-durable-jobs` → `pkg-c-content-packages` → `pkg-b-character-bible` → `pkg-a-identity-baseline` → PR #1).
 No secret values appear here; Railway variables are listed by name only.
 
 Evidence labels:
@@ -44,16 +44,17 @@ Evidence labels:
 | `20261110010000_audit_events` | `audit_events` table (additive) | TESTED LOCALLY, HOSTED CI at `8ce8ace` |
 | `20261110020000_character_versions_rights` | Versions, rights, pins, recorded inputs (additive), Package B | TESTED LOCALLY, HOSTED CI at `1cfcf9d` |
 | `20261110030000_content_packages` | Idea kinds, script versions, package fields; nullable trend score (fixture scores cleared), Package C | TESTED LOCALLY, HOSTED CI at `7e64744` |
-| `20261110040000_generation_jobs` | Jobs, steps, reconciliation records; pricing context on reservations (additive), Package D | TESTED LOCALLY |
+| `20261110040000_generation_jobs` | Jobs, steps, reconciliation records; pricing context on reservations (additive), Package D | TESTED LOCALLY, HOSTED CI at `0725bc8` |
+| `20261110050000_review_calendar_export` | Schedule instant/zone, calendar cancellation, `export_manifests` (additive), Package E | TESTED LOCALLY |
 
 Deploy path: `npm start` → `scripts/migrate-deploy.mjs`. It verifies a pre-migration database is identical to the baseline before recording it, and refuses otherwise. Rollback with Railway's button alone does not work after migration (the old image's `db push` refuses); this was re-tested at `10704fa`. See the deployment checklist doc.
 
 ## Tests at this branch (TESTED LOCALLY)
 
-- Backend `npm test`: 127/127 pass, 0 skipped.
+- Backend `npm test`: 141/141 pass, 0 skipped.
 - Frontend vitest: 10/10 pass.
 - `vite build` passes.
-- Playwright UI auth, character-bible, content-package and generation-jobs checks: pass.
+- Playwright UI auth, character-bible, content-package, generation-jobs and review/export (desktop and 390 px phone) checks: pass.
 - `npm audit`: 0 vulnerabilities in both packages.
 - Both workflows run on this branch's PR; see its checks for HOSTED CI results at the exact head.
 
@@ -129,6 +130,25 @@ Not run here: Docker image builds (no Docker daemon in the sandbox; covered by t
 | Old job replay after a newer approval; approved/scheduled items not silently regenerated | Met (`APPROVED_CONTENT` needs explicit confirmation; scheduled items refused; stale results superseded) | db-routes, db-packages, db-generation-races |
 | Recovery uses the durable ledger even if the app restarts with the default gate | Met (bug found by the e2e and fixed) | db-jobs regression test |
 | Provider status lookups for real adapters | **Not met.** No approved adapter has a verified lookup endpoint; operators resolve with evidence | ADR 0005 |
+
+## Package E exit criteria
+
+| Criterion (brief section 9) | Status | Evidence |
+| --- | --- | --- |
+| Snapshot hash covers every publish-relevant field, including scheduled instant and time zone | Met (version-bound: changing the time clears approval) | db-review-export "part of the approved snapshot"; mutation check |
+| IANA zone + UTC instant stored; destination vs viewer time distinguished | Met (zone, wall time and instant stored; review shows destination, UTC and viewer time) | review-export e2e (London viewer, LA destination) |
+| Ambiguous and nonexistent DST times | Met (explicit choice / refusal; canonical IANA names only) | zoned-time tests (LA, London, Lord Howe); db-review-export; e2e |
+| Scheduling is a plan, never delivery evidence | Met (labels at API and UI; publishing still refused) | db-routes; e2e |
+| Transitions enforced on the server | Met (schedule, cancel, export, delete and calendar edits all checked server-side) | db-review-export; db-routes |
+| Cancellation fences downstream jobs | Met (entry cancelled + item re-versioned in one transaction; `assertDeliverable` fence) | db-review-export cancellation test; mutation check |
+| Export only the approved immutable version, with provenance, rights and known cost; secrets, prompts and reference images excluded | Met (allow-list manifest, JSON + readable) | db-review-export export, provenance tests |
+| MIME, dimensions, playback, checksums validated; broken media prevents a success badge | Met for container-level checks (not a full decode) | db-review-export invalid-media test; e2e checksum of download |
+| Repeated export yields the same manifest | Met (canonical, no export time; same hash, single record) | db-review-export; mutation check |
+| A stale approval cannot export as current | Met (three guards; old exports marked superseded) | db-review-export; mutation check |
+| Export never posts or contacts anyone | Met (download only) | ADR 0006 |
+| Mobile/desktop review accessible; keyboard and error flows | Met for the review panel (responsive shell, labelled controls, alerts, keyboard cancel) | review-export e2e; screenshots |
+| Export with real media | **Not met.** Needs approved private media storage; default store is disabled (`MEDIA_STORE_NOT_CONFIGURED`) | ADR 0006 |
+| Media bundled into one download | **Not met.** Manifest lists URLs + checksums; bundling needs storage | ADR 0006 |
 
 ## Repository instructions
 

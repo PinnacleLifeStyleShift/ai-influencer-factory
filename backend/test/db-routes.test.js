@@ -181,15 +181,16 @@ test("generic content routes cannot schedule, publish or alter approved content"
   // Content created from an approved revision.
   const raw = await makeReviewItem(prisma);
   await approve(app, await getItem(app, raw.id));
-  const { body: s } = await app.call(`/api/pipeline/${raw.id}/schedule`, { method: "POST", token: TOKEN, body: { scheduledDate: "2026-12-01" } }).then(json);
+  const { body: s } = await app.call(`/api/pipeline/${raw.id}/schedule`, { method: "POST", token: TOKEN, body: {} }).then(json);
   const cid = s.content.id;
 
-  for (const body of [{ caption: "edited" }, { platform: "TikTok" }, { hashtags: "#new" }, { title: "new title" }, { status: "draft" }]) {
+  // The date is part of the approval now (Package E), so it is locked too.
+  for (const body of [{ caption: "edited" }, { platform: "TikTok" }, { hashtags: "#new" }, { title: "new title" }, { status: "draft" }, { scheduledDate: "2026-12-02" }]) {
     const r = await app.call(`/api/content/${cid}`, { method: "PUT", token: TOKEN, body }).then(json);
     assert.equal(r.body.code, "APPROVAL_LOCKED", JSON.stringify(body));
   }
-  // Re-sending unchanged values (as the calendar form does) plus a date change is allowed.
-  const ok = await app.call(`/api/content/${cid}`, { method: "PUT", token: TOKEN, body: { caption: s.content.caption, status: "scheduled", scheduledDate: "2026-12-02" } }).then(json);
+  // Re-sending unchanged values (as the calendar form does) plus notes is allowed.
+  const ok = await app.call(`/api/content/${cid}`, { method: "PUT", token: TOKEN, body: { caption: s.content.caption, status: "scheduled", scheduledDate: s.content.scheduledDate, notes: "n" } }).then(json);
   assert.equal(ok.status, 200);
   const stored = await prisma.content.findUnique({ where: { id: cid } });
   assert.equal(stored.caption, "Synthetic caption");
@@ -209,7 +210,7 @@ test("concurrent schedule requests create exactly one calendar entry", opts, () 
   const raw = await makeReviewItem(prisma);
   await approve(app, await getItem(app, raw.id));
   const responses = await Promise.all(Array.from({ length: 12 }, () =>
-    app.call(`/api/pipeline/${raw.id}/schedule`, { method: "POST", token: TOKEN, body: { scheduledDate: "2026-12-01" } }).then(json)));
+    app.call(`/api/pipeline/${raw.id}/schedule`, { method: "POST", token: TOKEN, body: {} }).then(json)));
   assert.ok(responses.every((r) => r.status === 200), JSON.stringify(responses.map((r) => r.status)));
   assert.equal(await prisma.content.count(), 1);
   assert.equal(new Set(responses.map((r) => r.body.content.id)).size, 1);

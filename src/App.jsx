@@ -37,6 +37,8 @@ function normalizeContent(c) {
     scheduled_date: c.scheduledDate, status: c.status, caption: c.caption,
     hashtags: c.hashtags, motion_prompt: c.motionPrompt,
     views: c.views || 0, likes: c.likes || 0, notes: c.notes,
+    scheduled_at: c.scheduledAt || null, schedule_timezone: c.scheduleTimezone || null,
+    from_approval: Boolean(c.scheduleKey), cancel_reason: c.cancelReason || null,
   };
 }
 function normalizeCampaign(c) {
@@ -62,7 +64,7 @@ const EYE_COLORS = ["Brown", "Blue", "Green", "Hazel", "Purple", "White", "Custo
 const CONTENT_TYPES = ["Static Image", "Animated Video", "Motion Sync Video", "Behind-the-Scenes", "Character Lore"];
 const TYPE_COLORS = { "Human": "#60a5fa", "Mammal Hybrid": "#fb923c", "Reptile Hybrid": "#4ade80", "Alien / Sci-Fi": "#c084fc", "Fantasy Creature": "#f472b6" };
 const TYPE_DOT = { "Static Image": "#C8FF00", "Animated Video": "#FF3BFF", "Motion Sync Video": "#3BFFFF", "Behind-the-Scenes": "#fb923c", "Character Lore": "#c084fc" };
-const STATUS_CLS = { published: "text-[#C8FF00] bg-[#C8FF00]/10", scheduled: "text-blue-300 bg-blue-500/10", draft: "text-zinc-500 bg-zinc-700/30", active: "text-[#C8FF00] bg-[#C8FF00]/10", closed: "text-zinc-500 bg-zinc-700/30" };
+const STATUS_CLS = { cancelled: "text-zinc-500 bg-zinc-700/30 line-through", published: "text-[#C8FF00] bg-[#C8FF00]/10", scheduled: "text-blue-300 bg-blue-500/10", draft: "text-zinc-500 bg-zinc-700/30", active: "text-[#C8FF00] bg-[#C8FF00]/10", closed: "text-zinc-500 bg-zinc-700/30" };
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
@@ -603,11 +605,14 @@ function ContentCalendar({ content, setContent, characters }) {
                 <div className="w-2 h-2 rounded-full flex-shrink-0" style={{background:TYPE_DOT[c.content_type]||"#71717a"}}/>
                 <div className="flex-1 min-w-0">
                   <div className="text-zinc-100 text-sm font-medium truncate">{c.title}</div>
-                  <div className="text-zinc-600 text-xs">{c.character_name} · {c.platform} · <span className={STATUS_CLS[c.status]||""}>{c.status}</span></div>
+                  <div className="text-zinc-600 text-xs">{c.character_name} · {c.platform} · <span className={STATUS_CLS[c.status]||""}>{c.status==="scheduled"?"scheduled (planned, not published)":c.status}</span></div>
+                  {c.scheduled_at&&<div className="text-zinc-500 text-xs">{new Date(c.scheduled_at).toLocaleString("en-US",{timeZone:c.schedule_timezone,dateStyle:"medium",timeStyle:"short"})} {c.schedule_timezone} · {new Date(c.scheduled_at).toISOString().slice(0,16).replace("T"," ")} UTC</div>}
+                  {c.status==="cancelled"&&c.cancel_reason&&<div className="text-zinc-500 text-xs">Cancelled: {c.cancel_reason}</div>}
                   {c.motion_prompt&&<div className="text-zinc-500 text-xs font-mono mt-0.5 truncate">"{c.motion_prompt}"</div>}
                 </div>
                 <div className="flex gap-2 text-xs">
-                  <button onClick={async()=>{try{await api.content.delete(c.id);setContent(cs=>cs.filter(x=>x.id!==c.id));}catch(e){console.error(e);}}} className="text-red-400 hover:underline">Delete</button>
+                  {!(c.from_approval&&c.status==="scheduled")&&<button onClick={async()=>{try{await api.content.delete(c.id);setContent(cs=>cs.filter(x=>x.id!==c.id));}catch(e){console.error(e);}}} className="text-red-400 hover:underline">Delete</button>}
+                  {c.from_approval&&c.status==="scheduled"&&<span className="text-zinc-500" title="Cancel from the pipeline item's content package">Cancel in Pipeline</span>}
                 </div>
               </div>
             ))}
@@ -882,11 +887,22 @@ export default function App() {
         ::-webkit-scrollbar-track { background: #09090f; }
         ::-webkit-scrollbar-thumb { background: #2a2a3a; border-radius: 2px; }
         ::-webkit-scrollbar-thumb:hover { background: #C8FF00; }
+        /* WHY: review must work on a phone (Package E). Below 768px the
+           sidebar becomes a top bar with a horizontally scrolling menu. */
+        @media (max-width: 767px) {
+          .app-shell { flex-direction: column !important; }
+          .app-aside { width: 100% !important; border-right: none !important; border-bottom: 1px solid #1e1e2a; }
+          .app-aside .app-brand { padding: 10px 16px !important; }
+          .app-aside .app-nav { flex-direction: row !important; overflow-x: auto; padding: 6px 10px !important; }
+          .app-aside .app-nav button { white-space: nowrap; flex-shrink: 0; }
+          .app-aside .app-aside-footer { display: none; }
+          .app-main { min-height: 0; }
+        }
       `}</style>
-      <div style={{ display:"flex", height:"100vh", overflow:"hidden", background:"#09090f" }}>
+      <div className="app-shell" style={{ display:"flex", height:"100vh", overflow:"hidden", background:"#09090f" }}>
         {/* Sidebar */}
-        <aside style={{ width:220, flexShrink:0, borderRight:"1px solid #1e1e2a", background:"#0d0d14", display:"flex", flexDirection:"column" }}>
-          <div style={{ padding:"20px", borderBottom:"1px solid #1e1e2a" }}>
+        <aside className="app-aside" style={{ width:220, flexShrink:0, borderRight:"1px solid #1e1e2a", background:"#0d0d14", display:"flex", flexDirection:"column" }}>
+          <div className="app-brand" style={{ padding:"20px", borderBottom:"1px solid #1e1e2a" }}>
             <div style={{ display:"flex", alignItems:"center", gap:10 }}>
               <div style={{ width:32, height:32, background:"#C8FF00", borderRadius:8, display:"flex", alignItems:"center", justifyContent:"center" }}>
                 <Zap size={15} color="#09090f" strokeWidth={2.5} />
@@ -897,7 +913,7 @@ export default function App() {
               </div>
             </div>
           </div>
-          <nav style={{ flex:1, padding:"12px 10px", display:"flex", flexDirection:"column", gap:2 }}>
+          <nav aria-label="Main" className="app-nav" style={{ flex:1, padding:"12px 10px", display:"flex", flexDirection:"column", gap:2 }}>
             {NAV.map(({id,icon:Icon,label})=>(
               <button key={id} onClick={()=>setPage(id)} style={{
                 display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:10, border:"none",
@@ -910,14 +926,14 @@ export default function App() {
               </button>
             ))}
           </nav>
-          <div style={{ padding:"16px 20px", borderTop:"1px solid #1e1e2a" }}>
+          <div className="app-aside-footer" style={{ padding:"16px 20px", borderTop:"1px solid #1e1e2a" }}>
             <div style={{ fontSize:11, color:"#3f3f50" }}>Powered by Higgsfield AI</div>
             <a href="https://higgsfield.ai" target="_blank" rel="noreferrer" style={{ fontSize:11, color:"#C8FF00", textDecoration:"none" }}>Open Studio →</a>
           </div>
         </aside>
 
         {/* Main */}
-        <main style={{ flex:1, overflowY:"auto" }}>
+        <main className="app-main" style={{ flex:1, overflowY:"auto" }}>
           {loading ? (
             <div className="flex items-center justify-center h-full">
               <div className="text-center">

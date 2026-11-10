@@ -11,13 +11,17 @@ import { ApiError, sendError, routeError } from "../lib/errors.js";
  * For content created from an approved revision, publish-relevant fields and
  * status are locked here; changes go through the pipeline and need re-approval.
  */
-const LOCKED_FIELDS = ["title", "contentType", "platform", "caption", "hashtags", "motionPrompt"];
+// The date is locked too: the schedule is part of the approval (Package E).
+const LOCKED_FIELDS = ["title", "contentType", "platform", "caption", "hashtags", "motionPrompt", "scheduledDate"];
 
 function assertStatusChange(status, existing) {
   if (status === undefined || (existing && status === existing.status)) return;
   if (status === "published") {
     throw new ApiError("PUBLISHING_NOT_ENABLED", 409,
       "Publishing is not enabled. Content cannot be marked published without platform confirmation.");
+  }
+  if (status === "cancelled") {
+    throw new ApiError("USE_CANCEL_SCHEDULE", 409, "Cancel through POST /api/pipeline/:id/cancel-schedule, which also fences delivery");
   }
   if (status === "scheduled") {
     throw new ApiError("APPROVAL_REQUIRED", 409,
@@ -145,6 +149,11 @@ router.put("/:id", async (req, res) => {
 // DELETE /api/content/:id
 router.delete("/:id", async (req, res) => {
   try {
+    const existing = await req.prisma.content.findUnique({ where: { id: req.params.id } });
+    if (!existing) return sendError(res, new ApiError("NOT_FOUND", 404, "Content not found"));
+    if (existing.scheduleKey && existing.status === "scheduled") {
+      throw new ApiError("USE_CANCEL_SCHEDULE", 409, "Cancel the schedule (POST /api/pipeline/:id/cancel-schedule) before deleting it");
+    }
     await req.prisma.content.delete({ where: { id: req.params.id } });
     res.json({ success: true });
   } catch (err) {

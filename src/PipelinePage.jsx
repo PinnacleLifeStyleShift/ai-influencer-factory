@@ -213,13 +213,12 @@ export default function PipelinePage({ characters }) {
   const scheduleItem = async (id) => {
     setBusy(true);
     try {
-      const today = new Date().toISOString().split("T")[0];
-      // Destination comes from the approved revision on the server.
-      await api.pipeline.schedule(id, { scheduledDate: today });
+      // Destination, time and time zone all come from the approved revision.
+      await api.pipeline.schedule(id);
       await load();
       setSelectedItem(null);
     } catch (err) {
-      console.error("Schedule error:", err);
+      setActionError(err.message);
     } finally {
       setBusy(false);
     }
@@ -272,7 +271,7 @@ export default function PipelinePage({ characters }) {
   );
 
   return (
-    <div className="p-6 max-w-[1400px] mx-auto">
+    <div className="p-3 sm:p-6 max-w-[1400px] mx-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
@@ -304,6 +303,7 @@ export default function PipelinePage({ characters }) {
         ))}
       </div>
 
+      {actionError && !selectedItem && <div className="text-xs text-red-400 mb-3" role="alert">{actionError}</div>}
       {packageId && <ContentPackage itemId={packageId} onClose={() => setPackageId(null)} onChanged={load} />}
 
       <div className="grid grid-cols-12 gap-6">

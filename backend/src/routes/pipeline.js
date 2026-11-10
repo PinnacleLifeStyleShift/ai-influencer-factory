@@ -20,6 +20,7 @@ import {
   createScriptVersion, initialScriptInput, DEFAULT_DISCLOSURE, DEFAULT_EXPORT_SETTINGS,
 } from "../services/scriptVersions.js";
 import { measurePackage } from "../services/shotPlan.js";
+import { resolveLocal, offsetLabel } from "../lib/zonedTime.js";
 import { checkClaims } from "../services/claims.js";
 import { createJob } from "../services/generationJobs.js";
 import { isProcessDeath } from "../services/generationGate.js";
@@ -49,6 +50,28 @@ function assertNotScheduled(item) {
   if (item.stage === "scheduled") {
     throw new ApiError("ALREADY_SCHEDULED", 409, "Scheduled items cannot be changed; their approved revision is locked");
   }
+}
+
+/**
+ * { local: "YYYY-MM-DDTHH:mm", timezone: IANA, ambiguity?: "earlier"|"later" }
+ * or null (no schedule). Stores the zone, the wall time and the UTC instant.
+ */
+function parseSchedule(schedule) {
+  if (schedule === null) return { scheduledAt: null, scheduleTimezone: null, scheduleLocal: null, scheduledDate: null };
+  if (!schedule || typeof schedule !== "object") throw invalid("schedule must be { local, timezone, ambiguity? } or null");
+  const { local, timezone, ambiguity } = schedule;
+  if (ambiguity !== undefined && !["earlier", "later"].includes(ambiguity)) throw invalid("schedule.ambiguity must be earlier or later");
+  const r = resolveLocal(local, timezone);
+  if (r.status === "invalid") throw invalid("schedule needs local as YYYY-MM-DDTHH:mm and timezone as an IANA zone (e.g. America/Los_Angeles)");
+  if (r.status === "nonexistent") {
+    throw new ApiError("SCHEDULE_TIME_NONEXISTENT", 422, `${local} does not exist in ${timezone} (clocks move forward that night); choose another time`);
+  }
+  if (r.status === "ambiguous" && !ambiguity) {
+    throw new ApiError("SCHEDULE_TIME_AMBIGUOUS", 422, `${local} happens twice in ${timezone} (clocks move back that night); choose the earlier or later one`,
+      { options: r.instants.map((d, i) => ({ ambiguity: i === 0 ? "earlier" : "later", utc: d.toISOString(), offset: offsetLabel(d.getTime(), timezone) })) });
+  }
+  const at = r.status === "ambiguous" && ambiguity === "later" ? r.instants[1] : r.instants[0];
+  return { scheduledAt: at, scheduleTimezone: timezone, scheduleLocal: local, scheduledDate: local.slice(0, 10) };
 }
 
 // ─── Generation claims ───────────────────────────────────────
@@ -554,7 +577,7 @@ router.post("/generate-caption", handle("POST /pipeline/generate-caption", async
   res.json({ success: true, pipelineItem: serializeItem(updated), captionDetails: captionResult });
 }));
 
-// PATCH /api/pipeline/:id { caption?, hashtags?, platform?, revision? }
+// PATCH /api/pipeline/:id { caption?, hashtags?, platform?, disclosure?, exportSettings?, schedule?, revision? }
 // Any change bumps the revision and invalidates an existing approval.
 router.patch("/:id", handle("PATCH /pipeline/:id", async (req, res) => {
   const body = req.body || {};
@@ -580,6 +603,7 @@ router.patch("/:id", handle("PATCH /pipeline/:id", async (req, res) => {
     }
     changes.exportSettings = { format: e.format, aspectRatio: e.aspectRatio, burnInCaptions: e.burnInCaptions };
   }
+  if (body.schedule !== undefined) Object.assign(changes, parseSchedule(body.schedule));
   if (body.revision !== undefined && !Number.isInteger(body.revision)) throw invalid("revision must be an integer");
 
   const item = await req.prisma.pipelineItem.findUnique({ where: { id: req.params.id } });
@@ -589,7 +613,7 @@ router.patch("/:id", handle("PATCH /pipeline/:id", async (req, res) => {
   }
   assertNotScheduled(item);
 
-  const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  const same = (a, b) => JSON.stringify(a instanceof Date ? a.toISOString() : a ?? null) === JSON.stringify(b instanceof Date ? b.toISOString() : b ?? null);
   const changed = Object.fromEntries(Object.entries(changes).filter(([k, v]) => !same(item[k], v)));
   if (Object.keys(changed).length > 0) {
     await applyChange(req.prisma, item, invalidatingChange(changed, item.stage === "approved" ? "review" : undefined));
@@ -610,6 +634,9 @@ router.get("/:id", handle("GET /pipeline/:id", async (req, res) => {
 }));
 
 router.delete("/:id", handle("DELETE /pipeline/:id", async (req, res) => {
+  const item = await req.prisma.pipelineItem.findUnique({ where: { id: req.params.id } });
+  if (!item) throw notFound();
+  if (item.stage === "scheduled") throw new ApiError("ALREADY_SCHEDULED", 409, "Cancel the schedule before deleting this item");
   await req.prisma.pipelineItem.delete({ where: { id: req.params.id } });
   res.json({ success: true });
 }));
@@ -700,15 +727,14 @@ router.post("/:id/reject", handle("POST /pipeline/:id/reject", async (req, res) 
   res.json({ success: true, pipelineItem: serializeItem(updated) });
 }));
 
-// POST /api/pipeline/:id/schedule { scheduledDate?: "YYYY-MM-DD", platform? }
-// Calendar planning only (nothing is published). Atomic and idempotent per
-// approved snapshot: the content row carries a unique scheduleKey.
+// POST /api/pipeline/:id/schedule { platform? }
+// Puts the approved snapshot on the calendar at the approved instant. The
+// instant and zone are part of the approval, so there is nothing to choose
+// here: to change the time, edit the item (which clears approval) and
+// re-approve. Calendar planning only; nothing is published. Atomic and
+// idempotent per approved snapshot (unique scheduleKey).
 router.post("/:id/schedule", handle("POST /pipeline/:id/schedule", async (req, res) => {
   const { scheduledDate, platform } = req.body || {};
-  if (scheduledDate !== undefined && (typeof scheduledDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(scheduledDate))) {
-    throw invalid("scheduledDate must be YYYY-MM-DD");
-  }
-  const date = scheduledDate || new Date().toISOString().slice(0, 10);
   const prisma = req.prisma;
 
   const replayExisting = async () => {
@@ -735,19 +761,30 @@ router.post("/:id/schedule", handle("POST /pipeline/:id/schedule", async (req, r
       if (item.approvedRevision !== item.revision || item.approvedHash !== hash) {
         throw new ApiError("APPROVAL_STALE", 409, "Approved snapshot no longer matches the item; re-approval required");
       }
-      // WHY: a running generation will replace this item's media; scheduling
-      // now would put media on the calendar that is about to change.
-      if (claimIsLive(item)) throw generationInProgress();
+      if (!item.scheduledAt || !item.scheduleTimezone) {
+        throw new ApiError("SCHEDULE_TIME_REQUIRED", 409,
+          "Set the destination time and time zone on the item, then approve it; the approval covers the schedule");
+      }
+      if (scheduledDate !== undefined && scheduledDate !== item.scheduledDate) {
+        throw new ApiError("SCHEDULE_NOT_APPROVED", 409,
+          `The approved schedule is ${item.scheduleLocal} ${item.scheduleTimezone}; a different date needs a new approval`);
+      }
       if (platform !== undefined && platform !== item.platform) {
         throw new ApiError("DESTINATION_MISMATCH", 409,
           `Approved destination is ${item.platform}; scheduling elsewhere requires a new approval`);
       }
+      if (new Date(item.scheduledAt).getTime() <= Date.now()) {
+        throw new ApiError("SCHEDULE_IN_PAST", 409, "The approved time has already passed; choose a new time and re-approve");
+      }
+      // WHY: a running generation will replace this item's media; scheduling
+      // now would put media on the calendar that is about to change.
+      if (claimIsLive(item)) throw generationInProgress();
 
       // Claim: only one concurrent request can move approved -> scheduled.
       const claim = await tx.pipelineItem.updateMany({
         where: { id: item.id, stage: "approved", revision: item.revision, approvedHash: hash, ...noLiveClaim() },
         // Clearing an abandoned claim fences out its late result (token gone).
-        data: { stage: "scheduled", scheduledDate: date, generationClaim: null, generationClaimedAt: null },
+        data: { stage: "scheduled", generationClaim: null, generationClaimedAt: null },
       });
       if (claim.count !== 1) return { replay: true };
 
@@ -760,7 +797,9 @@ router.post("/:id/schedule", handle("POST /pipeline/:id/schedule", async (req, r
           imageUrl: item.imageUrl,
           videoUrl: item.videoUrl,
           platform: item.platform,
-          scheduledDate: date,
+          scheduledDate: item.scheduledDate,
+          scheduledAt: item.scheduledAt,
+          scheduleTimezone: item.scheduleTimezone,
           status: "scheduled",
           caption: item.caption,
           hashtags: item.hashtags,
@@ -783,6 +822,38 @@ router.post("/:id/schedule", handle("POST /pipeline/:id/schedule", async (req, r
   }
   const updated = await prisma.pipelineItem.findUnique({ where: { id: req.params.id }, include: ITEM_INCLUDE });
   res.json({ success: true, replayed: false, pipelineItem: serializeItem(updated), content: outcome.content });
+}));
+
+// POST /api/pipeline/:id/cancel-schedule { reason }
+// WHY fencing: the calendar entry is marked cancelled (never deliverable) in
+// the same transaction that moves the item back to review with a new
+// revision. Any downstream job holding the old snapshot then fails its
+// conditional checks (status, approved hash) instead of delivering it.
+router.post("/:id/cancel-schedule", handle("POST /pipeline/:id/cancel-schedule", async (req, res) => {
+  const reason = req.body?.reason;
+  if (typeof reason !== "string" || reason.trim().length < 3 || reason.length > 500) {
+    throw invalid("reason is required (3-500 characters)");
+  }
+  const prisma = req.prisma;
+  const item = await prisma.pipelineItem.findUnique({ where: { id: req.params.id } });
+  if (!item) throw notFound();
+  if (item.stage !== "scheduled") throw new ApiError("INVALID_TRANSITION", 409, `Only scheduled items can be cancelled (current stage: ${item.stage})`);
+  await prisma.$transaction(async (tx) => {
+    const moved = await tx.pipelineItem.updateMany({
+      where: { id: item.id, stage: "scheduled", revision: item.revision },
+      data: invalidatingChange({ generationClaim: null, generationClaimedAt: null }, "review"),
+    });
+    if (moved.count !== 1) throw new ApiError("REVISION_CONFLICT", 409, "The item changed meanwhile; reload and retry");
+    if (item.contentId) {
+      await tx.content.updateMany({
+        where: { id: item.contentId, status: "scheduled", cancelledAt: null },
+        data: { status: "cancelled", cancelledAt: new Date(), cancelledBy: req.principal?.role || "unknown", cancelReason: reason.trim() },
+      });
+    }
+  });
+  const updated = await prisma.pipelineItem.findUnique({ where: { id: item.id }, include: ITEM_INCLUDE });
+  const content = item.contentId ? await prisma.content.findUnique({ where: { id: item.contentId } }) : null;
+  res.json({ success: true, pipelineItem: serializeItem(updated), content });
 }));
 
 export default router;

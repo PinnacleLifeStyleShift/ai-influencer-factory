@@ -114,6 +114,13 @@ model Content {
   scheduleKey     String?  @unique @map("schedule_key")
   approvedHash    String?  @map("approved_hash")
   mediaType       String?  @map("media_type") // image | video
+  // Planning only: the approved destination instant and zone, and
+  // cancellation (a cancelled entry can never be delivered).
+  scheduledAt      DateTime? @map("scheduled_at")
+  scheduleTimezone String?   @map("schedule_timezone")
+  cancelledAt      DateTime? @map("cancelled_at")
+  cancelledBy      String?   @map("cancelled_by")
+  cancelReason     String?   @map("cancel_reason")
   imageUrl        String?  @map("image_url")
   videoUrl        String?  @map("video_url")
 
@@ -250,6 +257,11 @@ model PipelineItem {
 
   scheduledDate String?   @map("scheduled_date")
   platform      String?
+  // Destination schedule (part of the approved snapshot, Package E): the IANA
+  // zone of the destination, the wall time there, and the resolved instant.
+  scheduledAt      DateTime? @map("scheduled_at")
+  scheduleTimezone String?   @map("schedule_timezone")
+  scheduleLocal    String?   @map("schedule_local")
 
   reviewNotes   String?   @map("review_notes")
   approvedAt    DateTime? @map("approved_at")
@@ -526,4 +538,21 @@ model ReconciliationRecord {
 
   @@index([stepId])
   @@map("reconciliation_records")
+}
+
+/// An export of one approved snapshot. The manifest is canonical JSON; the
+/// same approved content always produces the same manifest hash.
+model ExportManifest {
+  id             String   @id @default(cuid())
+  pipelineItemId String   @map("pipeline_item_id")
+  revision       Int
+  snapshotHash   String   @map("snapshot_hash")
+  manifestHash   String   @map("manifest_hash")
+  manifest       Json
+  createdBy      String?  @map("created_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@unique([pipelineItemId, manifestHash])
+  @@index([pipelineItemId])
+  @@map("export_manifests")
 }

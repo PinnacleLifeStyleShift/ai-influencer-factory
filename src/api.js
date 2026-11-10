@@ -99,7 +99,7 @@ export function createApiClient({
     if (!apiUrl) {
       throw new ApiConfigError("VITE_API_URL is not configured for this build; refusing to send requests");
     }
-    const { idempotencyKey, ...init } = options;
+    const { idempotencyKey, raw, ...init } = options;
     const token = tokenStore.get();
     const res = await fetchImpl(`${apiUrl}${path}`, {
       ...init,
@@ -122,7 +122,7 @@ export function createApiClient({
       e.details = err.details;
       throw e;
     }
-    return res.json();
+    return raw ? res : res.json();
   }
 
   return { request, signOut, apiUrl };
@@ -221,7 +221,18 @@ export const pipeline = {
     request(`/api/pipeline/${id}/approve`, { method: "POST", body: JSON.stringify(data) }),
   reject: (id, data = {}) =>
     request(`/api/pipeline/${id}/reject`, { method: "POST", body: JSON.stringify(data) }),
-  schedule: (id, data) =>
+  schedule: (id, data = {}) =>
     request(`/api/pipeline/${id}/schedule`, { method: "POST", body: JSON.stringify(data) }),
+  cancelSchedule: (id, reason) =>
+    request(`/api/pipeline/${id}/cancel-schedule`, { method: "POST", body: JSON.stringify({ reason }) }),
+  measureMedia: (id) => request(`/api/pipeline/${id}/measure-media`, { method: "POST", body: "{}" }),
+  exports: (id) => request(`/api/pipeline/${id}/exports`),
+  createExport: (id) => request(`/api/pipeline/${id}/exports`, { method: "POST", body: "{}" }),
+  /** Downloads an export (authenticated) and returns { blob, filename, current }. */
+  downloadExport: async (id, exportId, format = "json") => {
+    const res = await request(`/api/pipeline/${id}/exports/${exportId}/download?format=${format}`, { raw: true });
+    const filename = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") || "")?.[1] || `export.${format === "text" ? "txt" : "json"}`;
+    return { blob: await res.blob(), filename, current: res.headers.get("X-Export-Current") === "true" };
+  },
   delete: (id) => request(`/api/pipeline/${id}`, { method: "DELETE" }),
 };
