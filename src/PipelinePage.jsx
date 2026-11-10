@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import * as api from "./api.js";
+import ContentPackage from "./ContentPackage.jsx";
 import {
   TrendingUp, Sparkles, ImageIcon, MessageSquare, Check, X, Calendar,
   ChevronRight, Loader2, RefreshCw, ThumbsUp, ThumbsDown, Send,
@@ -7,6 +8,27 @@ import {
 } from "lucide-react";
 
 // ─── STYLE HELPERS (matching App.jsx theme) ──────────────────
+const DESTINATIONS = ["TikTok", "Instagram", "YouTube"];
+
+// One Idempotency-Key per user action, kept in sessionStorage until it
+// succeeds so a retry (even after a reload) reuses it instead of re-buying.
+const GEN_KEY_PREFIX = "aif.genKey.";
+function generationKeyFor(itemId, type) {
+  const k = `${GEN_KEY_PREFIX}${itemId}.${type}`;
+  try {
+    const existing = sessionStorage.getItem(k);
+    if (existing) return existing;
+    const created = api.newIdempotencyKey();
+    sessionStorage.setItem(k, created);
+    return created;
+  } catch {
+    return api.newIdempotencyKey();
+  }
+}
+function clearGenerationKey(itemId, type) {
+  try { sessionStorage.removeItem(`${GEN_KEY_PREFIX}${itemId}.${type}`); } catch { /* unavailable */ }
+}
+
 const css = {
   card: "bg-[#13131a] border border-[#2a2a3a] rounded-xl",
   input: "w-full bg-[#0d0d12] border border-[#2a2a3a] rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-[#C8FF00] transition-colors",
@@ -41,7 +63,10 @@ export default function PipelinePage({ characters }) {
   const [activeStep, setActiveStep] = useState("trends");
   const [stageFilter, setStageFilter] = useState("all");
   const [selectedItem, setSelectedItem] = useState(null);
+  const [packageId, setPackageId] = useState(null);
+  const [ideaTopic, setIdeaTopic] = useState("");
   const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState("");
 
   // Wizard state
   const [selectedCharacter, setSelectedCharacter] = useState("");
@@ -120,14 +145,18 @@ export default function PipelinePage({ characters }) {
     if (!currentPipelineItem) return;
     setBusy(true);
     try {
-      const result = await api.pipeline.generateContent({
-        pipelineItemId: currentPipelineItem.id,
-        type: "image",
-      });
+      setActionError("");
+      const result = await api.pipeline.generateContent(
+        { pipelineItemId: currentPipelineItem.id, type: "image" },
+        { idempotencyKey: generationKeyFor(currentPipelineItem.id, "image") }
+      );
+      clearGenerationKey(currentPipelineItem.id, "image");
       setCurrentPipelineItem(result.pipelineItem);
       setActiveStep("caption");
       await load();
     } catch (err) {
+      // Key is kept: retrying reuses it, so a paid request is never bought twice.
+      setActionError(err.message);
       console.error("Content gen error:", err);
     } finally {
       setBusy(false);
@@ -152,13 +181,16 @@ export default function PipelinePage({ characters }) {
     }
   };
 
-  const approveItem = async (id) => {
+  // Approves exactly the revision shown on screen (server checks revision + snapshot hash).
+  const approveItem = async (item) => {
     setBusy(true);
     try {
-      await api.pipeline.approve(id);
+      setActionError("");
+      await api.pipeline.approve(item.id, { revision: item.revision, snapshotHash: item.snapshotHash });
       await load();
       setSelectedItem(null);
     } catch (err) {
+      setActionError(err.message);
       console.error("Approve error:", err);
     } finally {
       setBusy(false);
@@ -181,12 +213,26 @@ export default function PipelinePage({ characters }) {
   const scheduleItem = async (id) => {
     setBusy(true);
     try {
-      const today = new Date().toISOString().split("T")[0];
-      await api.pipeline.schedule(id, { scheduledDate: today, platform: discoverPlatform });
+      // Destination, time and time zone all come from the approved revision.
+      await api.pipeline.schedule(id);
       await load();
       setSelectedItem(null);
     } catch (err) {
-      console.error("Schedule error:", err);
+      setActionError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const setDestination = async (item, platform) => {
+    setBusy(true);
+    try {
+      setActionError("");
+      const result = await api.pipeline.update(item.id, { platform: platform || null, revision: item.revision });
+      setCurrentPipelineItem(result.pipelineItem);
+      await load();
+    } catch (err) {
+      setActionError(err.message);
     } finally {
       setBusy(false);
     }
@@ -225,14 +271,14 @@ export default function PipelinePage({ characters }) {
   );
 
   return (
-    <div className="p-6 max-w-[1400px] mx-auto">
+    <div className="p-3 sm:p-6 max-w-[1400px] mx-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 style={{ fontFamily:"'Bebas Neue', sans-serif", letterSpacing:"0.1em" }} className="text-3xl text-zinc-100">
             Content Pipeline
           </h1>
-          <p className="text-zinc-500 text-sm mt-1">Discover trends → Generate scripts → Create content → Approve & schedule</p>
+          <p className="text-zinc-500 text-sm mt-1">Collect ideas → Write scripts → Build the package → Approve & plan</p>
         </div>
         <div className="flex gap-3">
           <button onClick={load} className={css.btnGhost}>
@@ -256,6 +302,9 @@ export default function PipelinePage({ characters }) {
           </button>
         ))}
       </div>
+
+      {actionError && !selectedItem && <div className="text-xs text-red-400 mb-3" role="alert">{actionError}</div>}
+      {packageId && <ContentPackage itemId={packageId} onClose={() => setPackageId(null)} onChanged={load} />}
 
       <div className="grid grid-cols-12 gap-6">
         {/* ─── LEFT: Wizard Panel ─────────────────────── */}
@@ -313,8 +362,15 @@ export default function PipelinePage({ characters }) {
                   </div>
                   <button onClick={discoverTrends} disabled={busy} className={`${css.btnVolt} w-full mb-4`}>
                     {busy ? <Loader2 size={14} className="inline animate-spin mr-2" /> : <TrendingUp size={14} className="inline mr-2" />}
-                    Discover Trends
+                    Generate simulated ideas
                   </button>
+                  <div className="flex gap-2 mb-4">
+                    <input className={css.input} placeholder="Or add your own idea…" value={ideaTopic} onChange={e => setIdeaTopic(e.target.value)} />
+                    <button className={css.btnGhost} disabled={busy || ideaTopic.trim().length < 3}
+                      onClick={async () => { try { await api.pipeline.addIdea({ topic: ideaTopic.trim(), platform: discoverPlatform }); setIdeaTopic(""); await load(); } catch (e) { setActionError(e.message); } }}>
+                      Add idea
+                    </button>
+                  </div>
 
                   {/* Trend List */}
                   <div className="space-y-2 max-h-[300px] overflow-y-auto">
@@ -330,14 +386,27 @@ export default function PipelinePage({ characters }) {
                             <div className="text-xs text-zinc-500 mt-1 line-clamp-2">{t.description}</div>
                           </div>
                           <div className="flex items-center gap-2 ml-2">
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#C8FF00]/10 text-[#C8FF00] font-medium">
-                              {t.trendScore}%
-                            </span>
+                            {/* Only real, sourced data could carry a score; unknown stays unknown. */}
+                            {t.trendScore !== null && t.trendScore !== undefined && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#C8FF00]/10 text-[#C8FF00] font-medium">{t.trendScore}%</span>
+                            )}
                             <ChevronRight size={12} className="text-zinc-600" />
                           </div>
                         </div>
                         <div className="flex gap-1 mt-2">
                           <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400">{t.platform}</span>
+                          {(t.kind === "simulated_fixture" || (!t.kind && t.provenance === "simulated_fixture")) && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300">Simulated, not a real trend</span>
+                          )}
+                          {t.kind === "manual_idea" && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-700 text-zinc-300">Your idea</span>
+                          )}
+                          {t.kind === "observation" && (
+                            <a href={t.sourceUrl} target="_blank" rel="noreferrer noopener" onClick={(e) => e.stopPropagation()}
+                              className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/10 text-green-300">
+                              Observed {new Date(t.observedAt).toLocaleDateString()} · source
+                            </a>
+                          )}
                           {(t.hashtags || []).slice(0, 3).map((h, i) => (
                             <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-500">{h}</span>
                           ))}
@@ -481,8 +550,19 @@ export default function PipelinePage({ characters }) {
                       </div>
                     )}
                   </div>
+                  <label className="block text-xs text-zinc-400 mb-1">Destination (part of what you approve)</label>
+                  <select className={`${css.input} mb-3`} value={currentPipelineItem.platform || ""} disabled={busy}
+                    onChange={(e) => setDestination(currentPipelineItem, e.target.value)}>
+                    <option value="">Choose destination…</option>
+                    {DESTINATIONS.map((d) => <option key={d} value={d}>{d}</option>)}
+                  </select>
+                  <div className="text-[10px] text-zinc-600 mb-3">
+                    Revision {currentPipelineItem.revision}. Changing media, caption or destination requires a new approval.
+                  </div>
+                  {actionError && <div className="text-xs text-red-400 mb-3">{actionError}</div>}
                   <div className="flex gap-3">
-                    <button onClick={() => approveItem(currentPipelineItem.id)} disabled={busy}
+                    <button onClick={() => approveItem(currentPipelineItem)}
+                      disabled={busy || !currentPipelineItem.platform || currentPipelineItem.stage !== "review"}
                       className="flex-1 bg-green-600 text-white font-semibold text-sm px-4 py-2 rounded-lg hover:bg-green-500 transition-colors">
                       <ThumbsUp size={14} className="inline mr-2" />Approve
                     </button>
@@ -554,6 +634,10 @@ export default function PipelinePage({ characters }) {
                     </div>
 
                     {/* Expanded Detail */}
+                    {selectedItem?.id === item.id && item.scriptVersionId && (
+                      <button onClick={(e) => { e.stopPropagation(); setPackageId(item.id); window.scrollTo(0, 0); }}
+                        className="mt-2 text-xs text-[#C8FF00] hover:underline">Open content package</button>
+                    )}
                     {selectedItem?.id === item.id && (
                       <div className="mt-4 pt-4 border-t border-[#2a2a3a]">
                         {item.script && (
@@ -587,12 +671,14 @@ export default function PipelinePage({ characters }) {
                           </div>
                         )}
                         <div className="flex gap-2">
-                          {(item.stage === "review" || item.stage === "content_generated" || item.stage === "draft") && (
-                            <>
-                              <button onClick={(e) => { e.stopPropagation(); approveItem(item.id); }}
+                          {item.stage === "review" && item.platform && (
+                              <button onClick={(e) => { e.stopPropagation(); approveItem(item); }}
                                 className="bg-green-600/80 text-white text-xs px-3 py-1.5 rounded-lg hover:bg-green-500 transition-colors">
                                 <ThumbsUp size={11} className="inline mr-1" />Approve
                               </button>
+                          )}
+                          {["review", "content_generated", "approved"].includes(item.stage) && (
+                            <>
                               <button onClick={(e) => { e.stopPropagation(); rejectItem(item.id); }}
                                 className="bg-red-600/30 text-red-300 text-xs px-3 py-1.5 rounded-lg hover:bg-red-600/50 transition-colors">
                                 <ThumbsDown size={11} className="inline mr-1" />Reject

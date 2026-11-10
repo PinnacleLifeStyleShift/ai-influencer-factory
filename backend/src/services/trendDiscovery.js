@@ -1,6 +1,12 @@
 // ─── Trend Discovery Service ─────────────────────────────────
 // Discovers trending topics across social media platforms.
-// Currently uses curated/simulated data. Will integrate real APIs later.
+// SIMULATED: topics come from the curated fixture lists below and scores are
+// random. Nothing here is observed from a real platform. Every result is
+// labelled with FIXTURE_PROVENANCE and must not be presented as a live trend.
+
+export const FIXTURE_PROVENANCE = "simulated_fixture";
+export const FIXTURE_SOURCE = "fixture:trendDiscovery.js@v1";
+export const MAX_TREND_COUNT = 10;
 
 const TREND_TEMPLATES = {
   TikTok: [
@@ -37,6 +43,9 @@ const NICHE_HASHTAGS = {
   Gaming: ["#gaming", "#gamer", "#gameplay", "#streamer", "#twitch", "#esports"],
 };
 
+export const SUPPORTED_PLATFORMS = Object.freeze(Object.keys(TREND_TEMPLATES));
+export const SUPPORTED_NICHES = Object.freeze(Object.keys(NICHE_HASHTAGS));
+
 const PLATFORM_HASHTAGS = {
   TikTok: ["#fyp", "#foryou", "#viral", "#trending", "#tiktok"],
   Instagram: ["#instagood", "#photooftheday", "#instagram", "#explore", "#reels"],
@@ -61,9 +70,14 @@ function generateTrendScore() {
  * @returns {Array} Array of trend objects
  */
 export function discoverTrends(platform = "TikTok", niche = "Lifestyle", count = 5) {
-  const platformTemplates = TREND_TEMPLATES[platform] || TREND_TEMPLATES.TikTok;
-  const nicheHashtags = NICHE_HASHTAGS[niche] || NICHE_HASHTAGS.Lifestyle;
-  const platHashtags = PLATFORM_HASHTAGS[platform] || PLATFORM_HASHTAGS.TikTok;
+  if (!SUPPORTED_PLATFORMS.includes(platform)) throw new RangeError(`Unsupported platform: ${platform}`);
+  if (!SUPPORTED_NICHES.includes(niche)) throw new RangeError(`Unsupported niche: ${niche}`);
+  if (!Number.isInteger(count) || count < 1 || count > MAX_TREND_COUNT) {
+    throw new RangeError(`count must be an integer from 1 to ${MAX_TREND_COUNT}`);
+  }
+  const platformTemplates = TREND_TEMPLATES[platform];
+  const nicheHashtags = NICHE_HASHTAGS[niche];
+  const platHashtags = PLATFORM_HASHTAGS[platform];
 
   const trends = [];
 
@@ -81,10 +95,11 @@ export function discoverTrends(platform = "TikTok", niche = "Lifestyle", count =
     trends.push({
       platform,
       topic: `${topic} — ${niche}`,
-      description: `Trending ${category.category} content on ${platform}: "${topic}" tailored for the ${niche.toLowerCase()} niche. This format is currently gaining traction and has high engagement potential.`,
+      description: `[Simulated idea] ${category.category} format for ${platform}: "${topic}" for the ${niche.toLowerCase()} niche. Drawn from a curated fixture list, not observed platform data.`,
       hashtags,
       trendScore: generateTrendScore(),
-      source: `${platform.toLowerCase()}-trends-${Date.now()}`,
+      source: FIXTURE_SOURCE,
+      provenance: FIXTURE_PROVENANCE,
       category: category.category,
     });
   }

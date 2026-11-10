@@ -1,7 +1,17 @@
 /**
  * AI Image Generation Service
- * Leonardo AI (primary) with Higgsfield (fallback).
+ *
+ * Provider adapters only. Every call goes through the generation gate
+ * (services/generationGate.js), which enforces provider selection/approval,
+ * the live-call switch and spending caps. Higgsfield is the selected primary
+ * image provider; Leonardo is kept as an optional adapter but is not selected,
+ * not approved, and is never used as an automatic fallback.
+ *
+ * NOTE: the Higgsfield endpoint below (platform.higgsfield.ai text2image/soul)
+ * is the route recovered from the March 2026 source. Its current availability,
+ * API entitlement, pricing and commercial-use terms are UNVERIFIED.
  */
+import { ProviderError } from "./generationGate.js";
 
 /**
  * Builds a prompt string from character data for image generation.
@@ -51,9 +61,9 @@ function leonardoAspectRatio(aspectRatio) {
   return mapping[aspectRatio] || { width: 1024, height: 1024 };
 }
 
-async function generateWithLeonardo(prompt, options = {}) {
+async function generateWithLeonardo(prompt, options = {}, ctx = {}) {
   const apiKey = process.env.LEONARDO_API_KEY;
-  if (!apiKey) throw new Error("LEONARDO_API_KEY not configured");
+  if (!apiKey) throw new ProviderError("LEONARDO_API_KEY not configured", { submitted: false });
 
   const { width, height } = leonardoAspectRatio(options.aspectRatio || "1:1");
 
@@ -66,8 +76,6 @@ async function generateWithLeonardo(prompt, options = {}) {
     alchemy: true,
     presetStyle: "PHOTOGRAPHY",
   };
-
-  console.log("Leonardo request:", JSON.stringify(body, null, 2));
 
   const createRes = await fetch("https://cloud.leonardo.ai/api/rest/v1/generations", {
     method: "POST",
@@ -92,8 +100,9 @@ async function generateWithLeonardo(prompt, options = {}) {
   if (!generationId) {
     throw new Error("Leonardo did not return a generationId");
   }
+  // Accepted: record the provider's id so an interrupted job can be reconciled.
+  await ctx.onAccepted?.(generationId);
 
-  console.log("Leonardo generationId:", generationId);
   return await pollLeonardo(generationId, apiKey);
 }
 
@@ -149,11 +158,11 @@ function higgsAspectRatio(aspectRatio) {
   return mapping[aspectRatio] || "1536x1536";
 }
 
-async function generateWithHiggsfield(prompt, options = {}) {
+async function generateWithHiggsfield(prompt, options = {}, ctx = {}) {
   const apiKey = process.env.HIGGSFIELD_API_KEY;
   const secret = process.env.HIGGSFIELD_SECRET;
   if (!apiKey || !secret) {
-    throw new Error("HIGGSFIELD_API_KEY and HIGGSFIELD_SECRET not configured");
+    throw new ProviderError("HIGGSFIELD_API_KEY and HIGGSFIELD_SECRET not configured", { submitted: false });
   }
 
   const body = {
@@ -165,8 +174,6 @@ async function generateWithHiggsfield(prompt, options = {}) {
       enhance_prompt: true,
     },
   };
-
-  console.log("Higgsfield request:", JSON.stringify(body, null, 2));
 
   const response = await fetch("https://platform.higgsfield.ai/v1/text2image/soul", {
     method: "POST",
@@ -190,9 +197,9 @@ async function generateWithHiggsfield(prompt, options = {}) {
   }
 
   const data = await response.json();
-  console.log("Higgsfield response:", JSON.stringify(data, null, 2));
-
   if (data?.job_set_id) {
+    // Accepted: record the provider's id so an interrupted job can be reconciled.
+    await ctx.onAccepted?.(data.job_set_id);
     return await pollHiggsfield(data.job_set_id, apiKey, secret);
   }
 
@@ -247,29 +254,38 @@ async function pollHiggsfield(jobSetId, apiKey, secret, maxAttempts = 30) {
 }
 
 // ---------------------------------------------------------------------------
-// Public API — tries Leonardo first, falls back to Higgsfield
+// Adapter registry and public API
 // ---------------------------------------------------------------------------
 
-export async function generateImage(prompt, options = {}) {
-  let leonardoError;
+/**
+ * Keyed by "provider:model". Presence here does not mean approved.
+ *
+ * capabilities declare what an adapter really sends. WHY: storing a reference
+ * URL proves nothing about identity consistency if the adapter never sends
+ * it; requests that need a capability are refused before any spend.
+ *  - referenceConditioning: reference images are sent to steer identity
+ *  - sourceImage: an input image is animated/edited (image-to-video)
+ * The recovered Higgsfield and Leonardo calls are text-to-image only.
+ */
+export const imageAdapters = {
+  "higgsfield:soul": {
+    capabilities: { referenceConditioning: false, sourceImage: false },
+    generate: ({ prompt, options }, ctx) =>
+      generateWithHiggsfield(prompt, options, ctx).then((imageUrl) => ({ imageUrl })),
+  },
+  "leonardo:phoenix": {
+    capabilities: { referenceConditioning: false, sourceImage: false },
+    generate: ({ prompt, options }, ctx) =>
+      generateWithLeonardo(prompt, options, ctx).then((imageUrl) => ({ imageUrl })),
+  },
+};
 
-  // Try Leonardo (primary)
-  try {
-    console.log("Trying Leonardo AI (primary)...");
-    return await generateWithLeonardo(prompt, options);
-  } catch (err) {
-    leonardoError = err;
-    console.error("Leonardo failed:", err.message);
-  }
-
-  // Fallback to Higgsfield
-  try {
-    console.log("Falling back to Higgsfield...");
-    return await generateWithHiggsfield(prompt, options);
-  } catch (higgsErr) {
-    console.error("Higgsfield also failed:", higgsErr.message);
-    throw new Error(
-      `All image providers failed. Leonardo: ${leonardoError?.message || "unknown"}. Higgsfield: ${higgsErr.message}`
-    );
-  }
+/**
+ * Generate one image through the given generation gate (selected, approved
+ * provider only). The gate is always passed in explicitly by the caller.
+ */
+export async function generateImage(gate, prompt, options = {}, { idempotencyKey, requestHash } = {}) {
+  if (!gate) throw new Error("generateImage requires a generation gate");
+  const result = await gate.run("image", { prompt, options }, { idempotencyKey, requestHash });
+  return result.imageUrl;
 }

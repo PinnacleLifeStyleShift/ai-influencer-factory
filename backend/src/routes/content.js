@@ -1,5 +1,40 @@
-import { Router } from "express";
-const router = Router();
+import { secureRouter } from "../lib/secureRouter.js";
+import { validateBody, listLimit, SCHEMAS } from "../lib/validate.js";
+import { ApiError, sendError, routeError } from "../lib/errors.js";
+
+/**
+ * Generic content routes are a planning calendar. They can never mark content
+ * scheduled or published:
+ *  - "scheduled" content is created only by POST /api/pipeline/:id/schedule
+ *    from an approved, unchanged pipeline revision (it carries scheduleKey);
+ *  - "published" needs a platform-confirmed publisher, which does not exist.
+ * For content created from an approved revision, publish-relevant fields and
+ * status are locked here; changes go through the pipeline and need re-approval.
+ */
+// The date is locked too: the schedule is part of the approval (Package E).
+const LOCKED_FIELDS = ["title", "contentType", "platform", "caption", "hashtags", "motionPrompt", "scheduledDate"];
+
+function assertStatusChange(status, existing) {
+  if (status === undefined || (existing && status === existing.status)) return;
+  if (status === "published") {
+    throw new ApiError("PUBLISHING_NOT_ENABLED", 409,
+      "Publishing is not enabled. Content cannot be marked published without platform confirmation.");
+  }
+  if (status === "cancelled") {
+    throw new ApiError("USE_CANCEL_SCHEDULE", 409, "Cancel through POST /api/pipeline/:id/cancel-schedule, which also fences delivery");
+  }
+  if (status === "scheduled") {
+    throw new ApiError("APPROVAL_REQUIRED", 409,
+      "Content can only be scheduled from an approved pipeline revision (POST /api/pipeline/:id/schedule)");
+  }
+  if (status !== "draft") {
+    throw new ApiError("VALIDATION_FAILED", 400, `Unsupported status: ${String(status).slice(0, 40)}`);
+  }
+  if (existing?.scheduleKey) {
+    throw new ApiError("APPROVAL_LOCKED", 409, "Status of approved, scheduled content cannot be changed here");
+  }
+}
+const router = secureRouter();
 
 // GET /api/content — list all, optional ?month=2026-03
 router.get("/", async (req, res) => {
@@ -14,6 +49,7 @@ router.get("/", async (req, res) => {
     }
 
     const content = await req.prisma.content.findMany({
+      take: listLimit(req),
       where,
       orderBy: { scheduledDate: "asc" },
       include: { character: { select: { id: true, name: true, characterId: true } } },
@@ -27,8 +63,7 @@ router.get("/", async (req, res) => {
     }));
     res.json(mapped);
   } catch (err) {
-    console.error("GET /content error:", err);
-    res.status(500).json({ error: "Failed to fetch content" });
+    return routeError(res, err, "Failed to fetch content", "GET /content");
   }
 });
 
@@ -39,24 +74,25 @@ router.get("/:id", async (req, res) => {
       where: { id: req.params.id },
       include: { character: true },
     });
-    if (!item) return res.status(404).json({ error: "Content not found" });
+    if (!item) return sendError(res, new ApiError("NOT_FOUND", 404, "Content not found"));
     res.json(item);
   } catch (err) {
-    console.error("GET /content/:id error:", err);
-    res.status(500).json({ error: "Failed to fetch content" });
+    return routeError(res, err, "Failed to fetch content", "GET /content/:id");
   }
 });
 
 // POST /api/content — create
-router.post("/", async (req, res) => {
+router.post("/", ["edit"], async (req, res) => {
   try {
+    validateBody(req.body, SCHEMAS.content);
+    assertStatusChange(req.body.status, null);
     const item = await req.prisma.content.create({
       data: {
         title: req.body.title,
         contentType: req.body.content_type || req.body.contentType,
         platform: req.body.platform,
         scheduledDate: req.body.scheduled_date || req.body.scheduledDate,
-        status: req.body.status || "scheduled",
+        status: "draft",
         caption: req.body.caption,
         hashtags: req.body.hashtags,
         motionPrompt: req.body.motion_prompt || req.body.motionPrompt,
@@ -67,14 +103,17 @@ router.post("/", async (req, res) => {
     });
     res.status(201).json({ ...item, character_name: item.character?.name || "" });
   } catch (err) {
-    console.error("POST /content error:", err);
-    res.status(500).json({ error: "Failed to create content" });
+    return routeError(res, err, "Failed to create content", "POST /content");
   }
 });
 
 // PUT /api/content/:id — update
-router.put("/:id", async (req, res) => {
+router.put("/:id", ["edit"], async (req, res) => {
   try {
+    validateBody(req.body, SCHEMAS.content, { partial: true });
+    const existing = await req.prisma.content.findUnique({ where: { id: req.params.id } });
+    if (!existing) return sendError(res, new ApiError("NOT_FOUND", 404, "Content not found"));
+    assertStatusChange(req.body.status, existing);
     const data = {};
     const fields = {
       title: "title", content_type: "contentType", contentType: "contentType",
@@ -85,8 +124,19 @@ router.put("/:id", async (req, res) => {
     for (const [bodyKey, prismaKey] of Object.entries(fields)) {
       if (req.body[bodyKey] !== undefined) data[prismaKey] = req.body[bodyKey];
     }
-    if (req.body.views !== undefined) data.views = parseInt(req.body.views) || 0;
-    if (req.body.likes !== undefined) data.likes = parseInt(req.body.likes) || 0;
+    if (existing.scheduleKey) {
+      const locked = LOCKED_FIELDS.filter((f) => data[f] !== undefined && (data[f] ?? null) !== (existing[f] ?? null));
+      if (locked.length) {
+        throw new ApiError("APPROVAL_LOCKED", 409,
+          `${locked.join(", ")} of approved content cannot be edited here; revise the pipeline item and re-approve`);
+      }
+    }
+    if (data.status === existing.status) delete data.status;
+    // WHY: a bare counter has no source, time or period. Readings go through
+    // /api/metrics/observations, which records all three.
+    if (req.body.views !== undefined || req.body.likes !== undefined) {
+      throw new ApiError("METRICS_USE_READINGS", 409, "Record views and likes as metric readings (with source and time) under Measurement");
+    }
 
     const item = await req.prisma.content.update({
       where: { id: req.params.id },
@@ -95,19 +145,22 @@ router.put("/:id", async (req, res) => {
     });
     res.json({ ...item, character_name: item.character?.name || "" });
   } catch (err) {
-    console.error("PUT /content/:id error:", err);
-    res.status(500).json({ error: "Failed to update content" });
+    return routeError(res, err, "Failed to update content", "PUT /content/:id");
   }
 });
 
 // DELETE /api/content/:id
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", ["edit"], async (req, res) => {
   try {
+    const existing = await req.prisma.content.findUnique({ where: { id: req.params.id } });
+    if (!existing) return sendError(res, new ApiError("NOT_FOUND", 404, "Content not found"));
+    if (existing.scheduleKey && ["scheduled", "partially_published", "published"].includes(existing.status)) {
+      throw new ApiError("USE_CANCEL_SCHEDULE", 409, "Cancel the schedule (POST /api/pipeline/:id/cancel-schedule) before deleting it");
+    }
     await req.prisma.content.delete({ where: { id: req.params.id } });
     res.json({ success: true });
   } catch (err) {
-    console.error("DELETE /content/:id error:", err);
-    res.status(500).json({ error: "Failed to delete content" });
+    return routeError(res, err, "Failed to delete content", "DELETE /content/:id");
   }
 });
 

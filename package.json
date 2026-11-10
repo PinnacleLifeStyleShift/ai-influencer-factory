@@ -7,20 +7,28 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "start": "serve dist -s -l ${PORT:-3000}"
+    "start": "serve dist -s -l ${PORT:-3000}",
+    "test": "vitest run --dir src",
+    "test:e2e": "cd backend && scripts/with-test-postgres.sh sh -c 'node ../e2e/ui-auth.e2e.mjs && node ../e2e/character-bible.e2e.mjs && node ../e2e/content-package.e2e.mjs && node ../e2e/generation-jobs.e2e.mjs && node ../e2e/review-export.e2e.mjs && node ../e2e/publishing.e2e.mjs && node ../e2e/measurement.e2e.mjs && node ../e2e/production-build.e2e.mjs'"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "recharts": "^2.15.0"
+    "recharts": "^2.15.0",
+    "serve": "^14.2.4"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.49",
-    "serve": "^14.2.4",
     "tailwindcss": "^3.4.17",
-    "vite": "^6.0.7"
+    "vite": "^6.0.7",
+    "vitest": "^5.1.0"
+  },
+  "overrides": {
+    "serve": {
+      "compression": "^1.8.2"
+    }
   }
 }

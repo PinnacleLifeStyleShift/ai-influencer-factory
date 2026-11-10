@@ -1,0 +1,160 @@
+name: Docker build
+
+# Builds both production images and smoke-tests them. Nothing is pushed or
+# deployed, and no secrets are used: the only token below is a synthetic
+# test value for a throwaway container.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      API_TOKEN: ci-smoke-token-0123456789abcdefghijklmn
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci
+    steps:
+      # WHY: on pull_request events the default checkout is a temporary merge
+      # commit, not the PR head. Test exactly the commit under review.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact head commit
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          actual="$(git rev-parse HEAD)"
+          echo "Testing $actual"
+          test "$actual" = "$EXPECTED_SHA"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/Dockerfile
+          push: false
+          load: true
+          tags: aif-api:ci
+          labels: org.opencontainers.image.revision=${{ github.event.pull_request.head.sha || github.sha }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Frontend build fails without VITE_API_URL
+        run: |
+          if docker build --target build -t aif-web:no-url . > build.log 2>&1; then
+            echo "::error::Frontend image built without VITE_API_URL"; exit 1
+          fi
+          grep -q "VITE_API_URL build arg is required" build.log
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          load: true
+          tags: aif-web:ci
+          labels: org.opencontainers.image.revision=${{ github.event.pull_request.head.sha || github.sha }}
+          build-args: |
+            VITE_API_URL=http://127.0.0.1:4000
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
+      - name: Images were built from the exact head
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          for img in aif-api:ci aif-web:ci; do
+            rev="$(docker inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$img")"
+            echo "$img built from $rev"
+            test "$rev" = "$EXPECTED_SHA"
+          done
+
+      - name: Smoke test backend image (fresh database)
+        run: |
+          docker run -d --name api --network host \
+            -e DATABASE_URL -e PORT=4000 -e OWNER_API_TOKEN="$API_TOKEN" \
+            -e FRONTEND_URL=http://127.0.0.1:3000 aif-api:ci
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:4000/health && break; sleep 2; done
+          curl -fsS http://127.0.0.1:4000/health
+          docker logs api 2>&1 | grep -q "\[migrate\] Done."
+          # Authentication is enforced; the owner token alone is not a session.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4000/api/characters)" = "401"
+          curl -s -H "Authorization: Bearer $API_TOKEN" http://127.0.0.1:4000/api/characters | grep -q '"code":"SESSION_REQUIRED"'
+          # Exchange it for a session, then read and write against the migrated schema.
+          SESSION="$(curl -fsS -X POST -H "Authorization: Bearer $API_TOKEN" http://127.0.0.1:4000/api/auth/session | jq -r .sessionToken)"
+          case "$SESSION" in ses_*) ;; *) echo "no session"; exit 1 ;; esac
+          curl -fsS -H "Authorization: Bearer $SESSION" http://127.0.0.1:4000/api/characters
+          curl -fsS -X POST -H "Authorization: Bearer $SESSION" -H "Content-Type: application/json" \
+            -d '{"name":"CI smoke"}' http://127.0.0.1:4000/api/characters | grep -q '"characterId":"INFL-001"'
+          # Paid generation is blocked by default.
+          curl -fsS -H "Authorization: Bearer $SESSION" http://127.0.0.1:4000/api/system/generation-policy \
+            | grep -q '"liveCallsEnabled":false'
+          # Errors carry a correlation ID.
+          curl -s -D - -o /dev/null http://127.0.0.1:4000/api/characters | grep -qi '^x-request-id:'
+          # Signing out revokes the session.
+          curl -fsS -X POST -H "Authorization: Bearer $SESSION" http://127.0.0.1:4000/api/auth/logout
+          curl -s -H "Authorization: Bearer $SESSION" http://127.0.0.1:4000/api/characters | grep -q '"code":"SESSION_REVOKED"'
+          # Ready = database answers and every migration is applied.
+          curl -fsS http://127.0.0.1:4000/ready | grep -q '"status":"ready"'
+          # Runs as a non-root user; the config audit is logged by name, never the token.
+          test "$(docker exec api id -u)" != "0"
+          docker logs api 2>&1 | grep -q "\[config\] INFO LIVE_PROVIDER_CALLS: disabled"
+          ! docker logs api 2>&1 | grep -q "$API_TOKEN"
+          # Graceful shutdown on SIGTERM (what a redeploy sends).
+          docker stop -t 30 api
+          docker logs api 2>&1 | grep -q "\[shutdown\] done"
+          docker start api
+
+      - name: Smoke test backend image (restart is a no-op migration)
+        run: |
+          docker restart api
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:4000/health && break; sleep 2; done
+          docker logs api 2>&1 | grep -q "No pending migrations"
+
+      - name: Smoke test frontend image
+        run: |
+          docker run -d --name web --network host -e PORT=3000 aif-web:ci
+          for i in $(seq 1 30); do curl -fsS -o /dev/null http://127.0.0.1:3000/ && break; sleep 1; done
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/)" = "200"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/characters)" = "200"  # SPA fallback
+          # The configured API URL is in the bundle; the old production fallback is not.
+          docker exec web sh -c 'grep -l "http://127.0.0.1:4000" dist/assets/*.js'
+          ! docker exec web sh -c 'grep -l "api-production-5a00" dist/assets/*.js'
+          # serve comes from the lockfile with the patched compression.
+          docker exec web sh -c 'node -p "require(\"./node_modules/compression/package.json\").version"' | grep -qx "1.8.2"
+          # Security headers, with the API as the only allowed connection; non-root.
+          curl -s -D - -o /dev/null http://127.0.0.1:3000/ | grep -qi "^content-security-policy:.*connect-src 'self' http://127.0.0.1:4000"
+          curl -s -D - -o /dev/null http://127.0.0.1:3000/characters | grep -qi "^x-frame-options: DENY"
+          test "$(docker exec web id -u)" != "0"
+
+      - name: Container logs
+        if: always()
+        run: |
+          docker logs api 2>&1 | tail -n 100 || true
+          docker logs web 2>&1 | tail -n 50 || true
