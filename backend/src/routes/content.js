@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { secureRouter } from "../lib/secureRouter.js";
 import { validateBody, listLimit, SCHEMAS } from "../lib/validate.js";
 import { ApiError, sendError, routeError } from "../lib/errors.js";
 
@@ -34,7 +34,7 @@ function assertStatusChange(status, existing) {
     throw new ApiError("APPROVAL_LOCKED", 409, "Status of approved, scheduled content cannot be changed here");
   }
 }
-const router = Router();
+const router = secureRouter();
 
 // GET /api/content — list all, optional ?month=2026-03
 router.get("/", async (req, res) => {
@@ -82,7 +82,7 @@ router.get("/:id", async (req, res) => {
 });
 
 // POST /api/content — create
-router.post("/", async (req, res) => {
+router.post("/", ["edit"], async (req, res) => {
   try {
     validateBody(req.body, SCHEMAS.content);
     assertStatusChange(req.body.status, null);
@@ -108,7 +108,7 @@ router.post("/", async (req, res) => {
 });
 
 // PUT /api/content/:id — update
-router.put("/:id", async (req, res) => {
+router.put("/:id", ["edit"], async (req, res) => {
   try {
     validateBody(req.body, SCHEMAS.content, { partial: true });
     const existing = await req.prisma.content.findUnique({ where: { id: req.params.id } });
@@ -150,7 +150,7 @@ router.put("/:id", async (req, res) => {
 });
 
 // DELETE /api/content/:id
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", ["edit"], async (req, res) => {
   try {
     const existing = await req.prisma.content.findUnique({ where: { id: req.params.id } });
     if (!existing) return sendError(res, new ApiError("NOT_FOUND", 404, "Content not found"));

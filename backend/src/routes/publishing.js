@@ -1,4 +1,5 @@
-import { Router } from "express";
+import { secureRouter } from "../lib/secureRouter.js";
+import { onlyFields } from "../lib/requests.js";
 import { routeError } from "../lib/errors.js";
 import { publishContent, recoverPublishJobs, checkDelivery, resolveDelivery } from "../services/publishing.js";
 
@@ -8,7 +9,7 @@ import { publishContent, recoverPublishJobs, checkDelivery, resolveDelivery } fr
  * every publish request is refused by the gate before anything is written.
  */
 export function publishingRoutes() {
-  const router = Router();
+  const router = secureRouter();
   const handle = (label, fn) => async (req, res) => {
     try { await fn(req, res); } catch (err) { return routeError(res, err, `Failed: ${label}`, label); }
   };
@@ -26,22 +27,22 @@ export function publishingRoutes() {
     res.json(jobs);
   }));
 
-  router.post("/content/:contentId/publish", handle("POST /publishing/content/:contentId/publish", async (req, res) => {
+  router.post("/content/:contentId/publish", ["publish"], onlyFields([]), handle("POST /publishing/content/:contentId/publish", async (req, res) => {
     const job = await publishContent(req.prisma, req.publishing.gate, req.params.contentId, { by: by(req), faults: req.publishing.faults, now: req.publishing.now() });
     res.json({ success: true, job });
   }));
 
-  router.post("/recover", handle("POST /publishing/recover", async (req, res) => {
+  router.post("/recover", ["admin"], onlyFields([]), handle("POST /publishing/recover", async (req, res) => {
     res.json({ recovered: await recoverPublishJobs(req.prisma, { now: req.publishing.now() }) });
   }));
 
-  router.post("/deliveries/:id/check", handle("POST /publishing/deliveries/:id/check", async (req, res) => {
+  router.post("/deliveries/:id/check", ["admin"], onlyFields([]), handle("POST /publishing/deliveries/:id/check", async (req, res) => {
     res.json(await checkDelivery(req.prisma, req.publishing.gate, req.params.id, { by: by(req) }));
   }));
 
-  router.post("/deliveries/:id/resolve", handle("POST /publishing/deliveries/:id/resolve", async (req, res) => {
-    const { resolution, evidence, remotePostId, permalink } = req.body || {};
-    res.json(await resolveDelivery(req.prisma, req.params.id, { resolution, evidence, remotePostId, permalink, by: by(req) }));
+  router.post("/deliveries/:id/resolve", ["admin"], onlyFields(["resolution", "evidence", "remotePostId", "permalink", "expectedRevision"]), handle("POST /publishing/deliveries/:id/resolve", async (req, res) => {
+    const { resolution, evidence, remotePostId, permalink, expectedRevision } = req.body || {};
+    res.json(await resolveDelivery(req.prisma, req.params.id, { resolution, evidence, remotePostId, permalink, expectedRevision, by: by(req) }));
   }));
 
   return router;

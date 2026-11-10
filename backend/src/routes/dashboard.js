@@ -1,7 +1,7 @@
 import { ApiError, sendError, routeError } from "../lib/errors.js";
-import { Router } from "express";
+import { secureRouter } from "../lib/secureRouter.js";
 import { moneySummary } from "../services/campaignMoney.js";
-const router = Router();
+const router = secureRouter();
 
 // GET /api/dashboard — aggregated stats for the command center
 router.get("/", async (req, res) => {

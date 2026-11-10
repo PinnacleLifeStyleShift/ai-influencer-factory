@@ -55,6 +55,7 @@ export function missingForUse(record, use, now = new Date()) {
   if (!record.permittedUses.includes(use)) missing.push(`permitted use: ${use}`);
   if (record.likenessOfRealPerson && !record.consentReference) missing.push("consent reference");
   if (record.expiresAt && new Date(record.expiresAt) <= now) missing.push("unexpired rights");
+  if (record.revokedAt) missing.push("rights were revoked");
   if (!record.approvedAt) missing.push("owner approval of the rights record");
   return missing;
 }
@@ -87,3 +88,51 @@ export async function approveRights(prisma, imageId, { by, recordId }) {
   if (record.approvedAt) return record;
   return prisma.rightsRecord.update({ where: { id: record.id }, data: { approvedBy: by, approvedAt: new Date() } });
 }
+
+/**
+ * Revokes the rights of a reference image (owner only).
+ *
+ * WHY a new record: history is never rewritten; what was cleared at the time
+ * stays visible. The revocation blocks every new use at once (it is the
+ * newest record), and every unpublished package that pinned or sent this
+ * image is put on a rights hold for review. Published items keep their
+ * record; nothing about them is rewritten.
+ */
+export async function revokeRights(prisma, imageId, { reason, by }) {
+  if (typeof reason !== "string" || reason.trim().length < 5 || reason.length > 1000) {
+    throw new ApiError("VALIDATION_FAILED", 400, "A reason is required (5-1000 characters)", { fields: { reason: "is required" } });
+  }
+  const image = await prisma.characterImage.findUnique({ where: { id: imageId } });
+  if (!image) throw new ApiError("NOT_FOUND", 404, "Image not found");
+  const latest = await latestRights(prisma, imageId);
+  if (latest?.revokedAt) throw new ApiError("ALREADY_REVOKED", 409, "The rights of this image are already revoked");
+  const now = new Date();
+  const record = await prisma.rightsRecord.create({ data: {
+    imageId, basis: latest?.basis || "owned_original", holder: latest?.holder || "unknown", permittedUses: [],
+    likenessOfRealPerson: latest?.likenessOfRealPerson || false, consentReference: latest?.consentReference || null,
+    licenseReference: latest?.licenseReference || null, notes: null,
+    recordedBy: by, approvedBy: by, approvedAt: now, revokedAt: now, revokeReason: reason.trim(),
+  } });
+  const affected = await affectedItems(prisma, image);
+  const held = affected.length
+    ? (await prisma.pipelineItem.updateMany({
+      where: { id: { in: affected }, stage: { not: "published" }, rightsHoldAt: null },
+      data: { rightsHoldAt: now, rightsHoldReason: `Rights of a reference image were revoked: ${reason.trim()}`.slice(0, 500) },
+    })).count
+    : 0;
+  return { record, affectedItems: affected.length, held };
+}
+
+/** Items whose pinned character version references the image, or that sent it to a provider. */
+async function affectedItems(prisma, image) {
+  const versions = await prisma.characterVersion.findMany({ where: { characterId: image.characterId } });
+  const pinning = versions.filter((v) => (Array.isArray(v.references) ? v.references : []).some((r) => r.imageId === image.id)).map((v) => v.id);
+  const ids = new Set();
+  if (pinning.length) (await prisma.pipelineItem.findMany({ where: { characterVersionId: { in: pinning } }, select: { id: true } })).forEach((i) => ids.add(i.id));
+  if (image.fingerprint) (await prisma.generationApplication.findMany({ where: { referencesSent: { has: image.fingerprint } }, select: { pipelineItemId: true } })).forEach((a) => ids.add(a.pipelineItemId));
+  return [...ids];
+}
+
+export const rightsHoldError = (item) => new ApiError("RIGHTS_REVIEW_REQUIRED", 409,
+  "A reference used by this item had its rights revoked; review it and clear the hold first", { reason: item.rightsHoldReason });
+
