@@ -3,7 +3,12 @@ builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-healthcheckPath = "/health"
+# /ready: the database answers and every committed migration is applied, so a
+# deploy that cannot reach its database fails and the old one keeps serving.
+healthcheckPath = "/ready"
 healthcheckTimeout = 300
+# Time between SIGTERM and SIGKILL. The server finishes in-flight requests for
+# up to 25 s (SHUTDOWN_GRACE_MS) before closing.
+drainingSeconds = 30
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 10

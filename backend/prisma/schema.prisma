@@ -150,6 +150,14 @@ model Campaign {
   // Currency of the planned payout (Package G). Planned, invoiced and received
   // money are separate records; nothing here is "earned" by itself.
   currency        String   @default("USD")
+  // A real, authorized sponsor relationship (brief section 3): agreement
+  // reference, who the sponsor is, when it was authorized and the paid-
+  // promotion disclosure. Required before characters are submitted.
+  sponsorLegalName    String?   @map("sponsor_legal_name")
+  sponsorAgreementRef String?   @map("sponsor_agreement_ref")
+  sponsorAuthorizedAt DateTime? @map("sponsor_authorized_at")
+  sponsorAuthorizedBy String?   @map("sponsor_authorized_by")
+  sponsorDisclosure   String?   @map("sponsor_disclosure")
   invoices        CampaignInvoice[]
   receipts        CampaignReceipt[]
 
@@ -270,6 +278,12 @@ model PipelineItem {
   // Extra destinations for the same original (cross-post), part of the
   // approved snapshot. One original posted to several places is one job.
   crossPostDestinations String[] @default([]) @map("cross_post_destinations")
+  // Set when rights of a reference this item pinned or sent are revoked:
+  // approval, scheduling, export and publishing stop until the owner reviews.
+  rightsHoldAt     DateTime? @map("rights_hold_at")
+  rightsHoldReason String?   @map("rights_hold_reason")
+  // The rendered asset (AssetVersion) the current videoUrl came from, if any.
+  renderedAssetId  String?   @map("rendered_asset_id")
 
   reviewNotes   String?   @map("review_notes")
   approvedAt    DateTime? @map("approved_at")
@@ -442,6 +456,10 @@ model RightsRecord {
   recordedAt          DateTime  @default(now()) @map("recorded_at")
   approvedBy          String?   @map("approved_by")
   approvedAt          DateTime? @map("approved_at")
+  // A revocation is a new record (history is never rewritten): no permitted
+  // uses, the owner's reason and time.
+  revokedAt           DateTime? @map("revoked_at")
+  revokeReason        String?   @map("revoke_reason")
 
   @@index([imageId, recordedAt])
   @@map("rights_records")
@@ -523,6 +541,8 @@ model GenerationStep {
   errorCode            String?  @map("error_code")
   createdAt            DateTime @default(now()) @map("created_at")
   updatedAt            DateTime @updatedAt @map("updated_at")
+  // Bumped on every change; reconciliation decisions compare-and-swap on it.
+  revision        Int      @default(0)
   reconciliations      ReconciliationRecord[]
 
   @@unique([jobId, index])
@@ -606,6 +626,8 @@ model PublishDelivery {
   submittedAt     DateTime? @map("submitted_at")
   confirmedAt     DateTime? @map("confirmed_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
+  // Bumped on every change; reconciliation decisions compare-and-swap on it.
+  revision        Int      @default(0)
   reconciliations PublishReconciliation[]
 
   @@unique([jobId, platform])
@@ -694,3 +716,42 @@ model CampaignReceipt {
 
   @@map("campaign_receipts")
 }
+
+/// A media file as it actually is (measured from its bytes), with where it
+/// came from. Rendered packages are stored here; the item's videoUrl then
+/// points at it, so approval binds the rendered file's hash.
+model AssetVersion {
+  id             String   @id @default(cuid())
+  pipelineItemId String   @map("pipeline_item_id")
+  kind           String   // rendered
+  contentHash    String   @map("content_hash")
+  mime           String
+  bytes          Int
+  width          Int?
+  height         Int?
+  codec          String?
+  durationSec    Float?   @map("duration_sec")
+  storageRef     String   @map("storage_ref")
+  sourceJobId    String?  @map("source_job_id")
+  // Inputs (shot keys, clip hashes, trims), tool and version, decode check.
+  provenance     Json
+  createdBy      String?  @map("created_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@unique([pipelineItemId, contentHash])
+  @@index([pipelineItemId])
+  @@map("asset_versions")
+}
+
+/// Runtime operational switches the owner can change without a redeploy
+/// (e.g. "generation_paused"). Every change records who, when and why.
+model SystemControl {
+  key       String   @id
+  value     Json
+  reason    String?
+  updatedBy String?  @map("updated_by")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("system_controls")
+}
+

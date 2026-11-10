@@ -1,6 +1,6 @@
 # Current baseline
 
-Recorded 2026-11-09. Updated for branch `pkg-g-measurement` (stacked on `pkg-f-publishing-interfaces` → `pkg-e-review-calendar-export` → `pkg-d-durable-jobs` → `pkg-c-content-packages` → `pkg-b-character-bible` → `pkg-a-identity-baseline` → PR #1).
+Recorded 2026-11-09. Updated for branch `pkg-h-operational-hardening` (stacked on `pkg-g-measurement` → `pkg-f-publishing-interfaces` → `pkg-e-review-calendar-export` → `pkg-d-durable-jobs` → `pkg-c-content-packages` → `pkg-b-character-bible` → `pkg-a-identity-baseline` → PR #1).
 No secret values appear here; Railway variables are listed by name only.
 
 Evidence labels:
@@ -47,16 +47,17 @@ Evidence labels:
 | `20261110040000_generation_jobs` | Jobs, steps, reconciliation records; pricing context on reservations (additive), Package D | TESTED LOCALLY, HOSTED CI at `0725bc8` |
 | `20261110050000_review_calendar_export` | Schedule instant/zone, calendar cancellation, `export_manifests` (additive), Package E | TESTED LOCALLY, HOSTED CI at `3504065` |
 | `20261110060000_publishing` | Cross-post destinations; publish jobs, deliveries, reconciliations (additive), publishing interfaces | TESTED LOCALLY, HOSTED CI at `066731a` |
-| `20261110070000_measurement` | Metric readings, campaign invoices and receipts, campaign currency (additive), measurement | TESTED LOCALLY |
+| `20261110070000_measurement` | Metric readings, campaign invoices and receipts, campaign currency (additive), measurement | TESTED LOCALLY, HOSTED CI at `2e2ed62` |
+| `20261110080000_sponsor_authorization` | Sponsor authorization fields on campaigns (additive), operational hardening | TESTED LOCALLY |
 
 Deploy path: `npm start` → `scripts/migrate-deploy.mjs`. It verifies a pre-migration database is identical to the baseline before recording it, and refuses otherwise. Rollback with Railway's button alone does not work after migration (the old image's `db push` refuses); this was re-tested at `10704fa`. See the deployment checklist doc.
 
 ## Tests at this branch (TESTED LOCALLY)
 
-- Backend `npm test`: 168/168 pass, 0 skipped.
-- Frontend vitest: 10/10 pass.
+- Backend `npm test`: 175/175 pass, 0 skipped (includes a real `pg_dump` → `pg_restore` drill).
+- Frontend vitest: 13/13 pass.
 - `vite build` passes.
-- Playwright UI auth, character-bible, content-package, generation-jobs, review/export (desktop and 390 px phone), publishing (simulation) and measurement checks: pass.
+- Playwright UI auth, character-bible, content-package, generation-jobs, review/export (desktop and 390 px phone), publishing (simulation), measurement and production-build (security headers, no CSP violations) checks: pass.
 - `npm audit`: 0 vulnerabilities in both packages.
 - Both workflows run on this branch's PR; see its checks for HOSTED CI results at the exact head.
 
@@ -180,6 +181,19 @@ Not run here: Docker image builds (no Docker daemon in the sandbox; covered by t
 | No automated DMs, likes, follower growth or deceptive persona claims | Met (none built) | — |
 | Platform analytics API | **Not met by design.** No provider; refresh refused until an account and official access are approved | ADR 0008 |
 | Legacy profile counters | Labelled self-reported; not migrated (no date or source) | ADR 0008 |
+
+## Operational hardening (brief section 11)
+
+| Item | Status | Evidence |
+| --- | --- | --- |
+| Railway builders, variables by name, auto-deploy, target database | Builders verified (Dockerfile, both services); variables listed by name; preflight reports the database fingerprint and migration state read-only | Deployment section above; `scripts/preflight.mjs`; db-ops |
+| Staged migration, backup/restore | Backup script plus a restore drill that refuses production and non-empty targets and checks row counts and migrations; tested for real against PostgreSQL 16 | db-ops; runbook sections 1 and 3 |
+| Frontend/API revisions and rollback plan | Revisions in the completion report; rollback by revert (never back past `277d2d3` without a restore) | Runbook section 2 |
+| Readiness and graceful shutdown | `/ready` (database + all migrations), Railway health check on it, 25 s drain within `drainingSeconds = 30` | db-ops; Docker smoke in CI |
+| Configuration audit by name only | Startup `[config]` lines and `/api/system/config-check` (admin); never values | db-ops; mutation checks |
+| Non-root images, security headers | Both images run as `node`; CSP and related headers, checked against the real production build | production-build e2e; Docker smoke in CI |
+| Sponsor relationship (brief section 3) | Submissions need a recorded agreement and a paid-promotion disclosure | db-ops |
+| External monitoring, scheduled backups, multi-instance rate limits | **Not done.** Owner decisions (service, cost, storage) | ADR 0009 |
 
 ## Repository instructions
 

@@ -20,3 +20,7 @@ dist/
 # logs
 *.log
 npm-debug.log*
+
+# Database backups contain real data: never commit them.
+backups/
+*.dump

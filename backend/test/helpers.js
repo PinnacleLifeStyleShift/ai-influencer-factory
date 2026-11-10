@@ -90,16 +90,18 @@ export function fakePrisma(seed = {}) {
   };
   const auditRows = [];
   const auditEvent = { create: async ({ data }) => { auditRows.push(data); return data; } };
+  // Runtime switches (generation pause): none set in the fake database.
+  const systemControl = { findUnique: async () => null, upsert: async ({ create }) => create };
   return {
-    db, calls, session, sessionRows: sessions, auditEvent, auditRows, generationJob, generationStep,
+    db, calls, session, sessionRows: sessions, auditEvent, auditRows, generationJob, generationStep, systemControl,
     character: model("character"),
     content: model("content"),
     pipelineItem: model("pipelineItem"),
   };
 }
 
-export async function startApp({ env = {}, prisma = fakePrisma(), gate, mediaStore, publishers, publishFaults, publishClock, metricsProviders } = {}) {
-  const app = createApp({ prisma, env, gate, mediaStore, publishers, publishFaults, publishClock, metricsProviders, logRequests: false });
+export async function startApp({ env = {}, prisma = fakePrisma(), gate, mediaStore, publishers, publishFaults, publishClock, metricsProviders, assembly } = {}) {
+  const app = createApp({ prisma, env, gate, mediaStore, publishers, publishFaults, publishClock, metricsProviders, assembly, logRequests: false });
   const server = await new Promise((resolve) => {
     const s = app.listen(0, "127.0.0.1", () => resolve(s));
   });
