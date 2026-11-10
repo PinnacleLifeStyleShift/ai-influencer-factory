@@ -273,16 +273,19 @@ export function createPrismaLedger(prisma, { now = () => new Date() } = {}) {
     async findByKey(key) {
       return rowOut(await prisma.generationReservation.findUnique({ where: { idempotencyKey: key } }));
     },
-    async resolve(id, { charged, actualMicros = null, result = null }) {
+    // `tx`: run inside the caller's transaction, so the reservation, the step
+    // decision and its audit record commit together or not at all.
+    async resolve(id, { charged, actualMicros = null, result = null }, { tx } = {}) {
       assertActual(actualMicros);
-      const r = await prisma.generationReservation.findUnique({ where: { id } });
+      const db = tx || prisma;
+      const r = await db.generationReservation.findUnique({ where: { id } });
       if (!r) throw new ApiError("NOT_FOUND", 404, "Reservation not found");
       const data = charged
         ? { state: "settled", actualMicros: Number.isInteger(actualMicros) ? BigInt(actualMicros) : r.amountMicros, result: result ?? undefined }
         : { state: "released" };
-      const { count } = await prisma.generationReservation.updateMany({ where: { id, state: { in: SETTLEABLE } }, data });
+      const { count } = await db.generationReservation.updateMany({ where: { id, state: { in: SETTLEABLE } }, data });
       if (count !== 1) throw new ApiError("NOT_RESOLVABLE", 409, "This reservation is not open or uncertain");
-      return rowOut(await prisma.generationReservation.findUnique({ where: { id } }));
+      return rowOut(await db.generationReservation.findUnique({ where: { id } }));
     },
   };
 }

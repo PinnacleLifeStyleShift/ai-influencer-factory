@@ -1,5 +1,7 @@
 # Reconciliation: implementation specification of 10 November 2026
 
+> **Superseded by `ai-influencer-prompt-evidence.md`.** That file holds the final story and acceptance matrix after PRs #10–#14; this file records the gap analysis made at PR #10.
+
 The 10 November spec reviewed the stack up to PR #5 (`0725bc8`). Since then, PRs #6–#9 (Package E, publishing interfaces, measurement, operational hardening) and this branch were added. This file maps each requirement to what exists, so nothing is rebuilt needlessly ("Do not rebuild completed candidate work") and the real gaps are explicit.
 
 **Status words:**

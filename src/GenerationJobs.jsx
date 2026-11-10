@@ -44,13 +44,14 @@ function ResolveForm({ step, onDone }) {
     setError("");
     if (!window.confirm("Record this resolution? It is permanent and decides whether the money stays counted.")) return;
     try {
-      const body = { resolution: f.resolution, evidence: f.evidence };
+      // The revision the owner reviewed: a parallel decision makes this a conflict.
+      const body = { resolution: f.resolution, evidence: f.evidence, expectedRevision: step.revision };
       if (f.actualCost) body.actualCost = f.actualCost;
       if (f.resolution === "charged_with_result") body.resultUrl = f.resultUrl;
       await api.generationJobs.resolve(step.id, body);
       onDone();
     } catch (e) {
-      setError(e.details?.fields ? Object.entries(e.details.fields).map(([k, v]) => `${k} ${v}`).join("; ") : e.message);
+      setError(e.code === "RECONCILIATION_CONFLICT" ? `${e.message} (now: ${e.details?.currentState})` : e.details?.fields ? Object.entries(e.details.fields).map(([k, v]) => `${k} ${v}`).join("; ") : e.message);
     }
   };
   return (

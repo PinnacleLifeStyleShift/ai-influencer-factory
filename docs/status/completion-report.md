@@ -1,5 +1,7 @@
 # Completion report
 
+> **Updated after PRs #10–#14:** see `ai-influencer-prompt-evidence.md` for the owner's project-prompt evidence packet (route-bound authorization, reconciliation compare-and-swap, revocation holds, rendering, operations, migration gates).
+
 Recorded 2026-11-10 for the completion brief v1.0 (9 November 2026). Evidence labels are as in `current-baseline.md`: VERIFIED SOURCE, TESTED LOCALLY, HOSTED CI, DEPLOYED, LIVE-VERIFIED. No secret values appear here.
 
 **Bottom line:** every package in the brief is built and tested with mocks, synthetic media and throwaway databases. **Nothing is merged or deployed yet**, so nothing is LIVE-VERIFIED. Production still runs `277d2d3`, which has no authentication.

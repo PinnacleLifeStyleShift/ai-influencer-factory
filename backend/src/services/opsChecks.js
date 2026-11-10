@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { MIN_TOKEN_LENGTH } from "../middleware/auth.js";
+import { retentionPolicy } from "./retention.js";
 
 /**
  * Operational checks.
@@ -48,6 +49,11 @@ export function configFindings(env = process.env, { nodeVersion = process.versio
   if (env.PUBLISHING_SIMULATION === "enabled") add("warning", "PUBLISHING_SIMULATION", "is enabled: publish runs are simulated (clearly labelled, never counted as published)");
   if (env.MEDIA_STORE === "synthetic-fixture") add(env.NODE_ENV === "production" ? "warning" : "info", "MEDIA_STORE", "is the synthetic fixture store (test files only); real exports cannot verify media");
   else if (!env.MEDIA_STORE) add("info", "MEDIA_STORE", "not configured: export reports MEDIA_STORE_NOT_CONFIGURED");
+  if (env.MEDIA_ASSEMBLY === "ffmpeg") add("info", "MEDIA_ASSEMBLY", "enabled where ffmpeg is installed (deterministic local rendering)");
+  else add("info", "MEDIA_ASSEMBLY", "disabled: multi-shot packages cannot be rendered into one file");
+  for (const [category, r] of Object.entries(retentionPolicy(env))) {
+    add(r.state.startsWith("invalid") ? "warning" : "info", `RETENTION_POLICY.${category}`, r.retainDays ? `${r.retainDays} days` : r.state);
+  }
   if (env.METRICS_API === "enabled") add("warning", "METRICS_API", "is enabled but no analytics provider is implemented");
   return f;
 }
