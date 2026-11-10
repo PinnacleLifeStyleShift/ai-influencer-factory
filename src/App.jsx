@@ -1,10 +1,15 @@
 import { useState, useCallback, useEffect } from "react";
 import * as api from "./api.js";
+import CharacterBible from "./CharacterBible.jsx";
+import GenerationJobs from "./GenerationJobs.jsx";
+import Measurement from "./Measurement.jsx";
+import Operations from "./Operations.jsx";
+import CampaignMoney, { MoneyStates } from "./CampaignMoney.jsx";
 import {
   LayoutDashboard, Users, CalendarDays, Megaphone, Zap,
   Plus, X, Search, Trash2, ChevronLeft, ChevronRight,
   ArrowLeft, Video, TrendingUp, DollarSign, Eye, ExternalLink,
-  Loader2, Image as ImageIcon
+  Loader2, Image as ImageIcon, Activity
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell
@@ -35,13 +40,15 @@ function normalizeContent(c) {
     scheduled_date: c.scheduledDate, status: c.status, caption: c.caption,
     hashtags: c.hashtags, motion_prompt: c.motionPrompt,
     views: c.views || 0, likes: c.likes || 0, notes: c.notes,
+    scheduled_at: c.scheduledAt || null, schedule_timezone: c.scheduleTimezone || null,
+    from_approval: Boolean(c.scheduleKey), cancel_reason: c.cancelReason || null,
   };
 }
 function normalizeCampaign(c) {
   return {
     id: c.id, name: c.name, brand: c.brand, platform: c.platform,
     brief: c.brief, requirements: c.requirements,
-    payout_amount: c.payoutAmount, deadline: c.deadline, status: c.status,
+    payout_amount: c.payoutAmount, deadline: c.deadline, status: c.status, currency: c.currency || "USD",
     submissions: (c.submissions || []).map(s => ({
       id: s.id, character_id: s.characterId, character_name: s.character_name || s.character?.name || "",
       submission_url: s.submissionUrl, notes: s.notes, payout: s.payout || 0,
@@ -60,7 +67,7 @@ const EYE_COLORS = ["Brown", "Blue", "Green", "Hazel", "Purple", "White", "Custo
 const CONTENT_TYPES = ["Static Image", "Animated Video", "Motion Sync Video", "Behind-the-Scenes", "Character Lore"];
 const TYPE_COLORS = { "Human": "#60a5fa", "Mammal Hybrid": "#fb923c", "Reptile Hybrid": "#4ade80", "Alien / Sci-Fi": "#c084fc", "Fantasy Creature": "#f472b6" };
 const TYPE_DOT = { "Static Image": "#C8FF00", "Animated Video": "#FF3BFF", "Motion Sync Video": "#3BFFFF", "Behind-the-Scenes": "#fb923c", "Character Lore": "#c084fc" };
-const STATUS_CLS = { published: "text-[#C8FF00] bg-[#C8FF00]/10", scheduled: "text-blue-300 bg-blue-500/10", draft: "text-zinc-500 bg-zinc-700/30", active: "text-[#C8FF00] bg-[#C8FF00]/10", closed: "text-zinc-500 bg-zinc-700/30" };
+const STATUS_CLS = { partially_published: "text-amber-300 bg-amber-500/10", cancelled: "text-zinc-500 bg-zinc-700/30 line-through", published: "text-[#C8FF00] bg-[#C8FF00]/10", scheduled: "text-blue-300 bg-blue-500/10", draft: "text-zinc-500 bg-zinc-700/30", active: "text-[#C8FF00] bg-[#C8FF00]/10", closed: "text-zinc-500 bg-zinc-700/30" };
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
@@ -158,15 +165,13 @@ function Avatar({ name, imageUrl, type, size = 40 }) {
 
 // ─── DASHBOARD ────────────────────────────────────────────────
 function Dashboard({ characters, content, campaigns }) {
-  const published = content.filter(c => c.status === "published");
-  const scheduled = content.filter(c => c.status === "scheduled");
   const activeCamps = campaigns.filter(c => c.status === "active");
-  const totalEarned = campaigns.reduce((s, c) => s + (c.submissions || []).reduce((a, b) => a + parseFloat(b.payout || 0), 0), 0);
-
-  const platformData = PLATFORMS.map(p => ({
-    platform: p,
-    views: content.filter(c => c.platform === p).reduce((s, c) => s + (c.views || 0), 0)
-  })).filter(d => d.views > 0);
+  // WHY from the server: only platform-confirmed posts count as published,
+  // money is shown by state (planned / invoiced / received) and measurement
+  // shows its sources; the old client-side "earned" and "views" sums had none.
+  const [summary, setSummary] = useState(null);
+  useEffect(() => { api.dashboard.get().then(setSummary).catch(() => {}); }, []);
+  const m = summary?.measurement;
 
   const typeData = CONTENT_TYPES.map(t => ({ type: t, count: content.filter(c => c.content_type === t).length })).filter(d => d.count > 0);
   const totalContent = content.length || 1;
@@ -181,26 +186,29 @@ function Dashboard({ characters, content, campaigns }) {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard label="Characters" value={characters.length} sub={`${characters.filter(c=>c.status==="active").length} active`} volt />
-        <StatCard label="Content" value={content.length} sub={`${published.length} published · ${scheduled.length} scheduled`} />
+        <StatCard label="Content" value={content.length} sub={summary ? `${summary.content.published} published (confirmed) · ${summary.content.partiallyPublished} partly · ${summary.content.scheduled} planned` : "…"} />
         <StatCard label="Active Campaigns" value={activeCamps.length} />
-        <StatCard label="Total Earned" value={`$${totalEarned.toFixed(2)}`} sub="Higgsfield Earn" volt />
+        <div className={`${css.card} p-5`}>
+          <div className="text-[10px] uppercase tracking-wider text-zinc-600 mb-2">Campaign money</div>
+          <div className="text-xs text-zinc-300 leading-relaxed">{summary ? <MoneyStates summary={summary.campaigns.money} /> : "…"}</div>
+          <div className="text-[10px] text-zinc-600 mt-1">Only money received is income</div>
+        </div>
       </div>
 
       <div className="grid grid-cols-3 gap-5">
         <div className={`${css.card} p-5 col-span-2`}>
-          <h2 style={{ fontFamily: "'Bebas Neue', sans-serif", letterSpacing: "0.1em" }} className="text-xl text-zinc-100 mb-4">PLATFORM VIEWS</h2>
-          {platformData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={180}>
-              <BarChart data={platformData} barSize={40}>
-                <XAxis dataKey="platform" tick={{ fill: "#71717a", fontSize: 12 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: "#71717a", fontSize: 11 }} axisLine={false} tickLine={false} />
-                <Tooltip contentStyle={{ background: "#13131a", border: "1px solid #2a2a3a", borderRadius: 8, color: "#f4f4f5", fontSize: 12 }} cursor={{ fill: "rgba(200,255,0,0.04)" }} />
-                <Bar dataKey="views" radius={[4,4,0,0]}>
-                  {platformData.map((_, i) => <Cell key={i} fill={i%2===0?"#C8FF00":"#FF3BFF"} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          ) : <div className="h-44 flex items-center justify-center text-zinc-600 text-sm">No published content yet</div>}
+          <h2 style={{ fontFamily: "'Bebas Neue', sans-serif", letterSpacing: "0.1em" }} className="text-xl text-zinc-100 mb-4">MEASUREMENT</h2>
+          {!m ? <div className="text-zinc-600 text-sm">…</div> : m.confirmedPosts === 0 ? (
+            <div className="h-36 flex items-center justify-center text-zinc-600 text-sm text-center">No platform-confirmed posts yet, so there is nothing to measure.</div>
+          ) : (
+            <div className="text-sm text-zinc-300 space-y-2">
+              <div>{m.confirmedPosts} confirmed post(s); <span className={m.postsWithoutReadings ? "text-amber-300" : ""}>{m.postsWithoutReadings} without any reading</span></div>
+              {Object.keys(m.sources).length === 0 ? <div className="text-zinc-500 text-xs">No readings recorded.</div> : Object.entries(m.sources).map(([src, x]) => (
+                <div key={src} className="text-xs text-zinc-400">{src === "api" ? "Platform API" : src === "manual" ? "Manual readings" : "Fixtures (not real)"}: {x.readings} reading(s), last recorded {new Date(x.lastRecordedAt).toLocaleString()}</div>
+              ))}
+              <div className="text-xs text-zinc-500">Open Measurement for period reports by source and time zone.</div>
+            </div>
+          )}
         </div>
 
         <div className={`${css.card} p-5`}>
@@ -226,7 +234,7 @@ function Dashboard({ characters, content, campaigns }) {
         {top.length === 0 ? <div className="text-zinc-600 text-sm py-6 text-center">No characters yet</div> : (
           <table className="w-full text-sm">
             <thead><tr className="border-b border-[#2a2a3a]">
-              {["Character","Niche","Followers","Views","Engagement"].map(h => (
+              {["Character","Niche","Followers*","Views*","Engagement*"].map(h => (
                 <th key={h} className="text-left pb-2 text-[10px] uppercase tracking-wider text-zinc-600 font-medium pr-4">{h}</th>
               ))}
             </tr></thead>
@@ -243,6 +251,7 @@ function Dashboard({ characters, content, campaigns }) {
             </tbody>
           </table>
         )}
+        {top.length > 0 && <p className="text-[10px] text-zinc-600 mt-2">* Typed into the character profile; no source or date. Measured numbers are under Measurement.</p>}
       </div>
     </div>
   );
@@ -303,7 +312,9 @@ function CharacterForm({ initial, onSave, onClose }) {
         <div className="grid grid-cols-3 gap-3">
           <Select label="Aspect Ratio" value={f.aspect_ratio} onChange={e=>set("aspect_ratio",e.target.value)} options={["9:16","1:1","16:9"]} />
           <Select label="Quality" value={f.quality_setting} onChange={e=>set("quality_setting",e.target.value)} options={["4K","1K"]} />
-          <Input label="Reference Image URL" value={f.reference_image_url} onChange={e=>set("reference_image_url",e.target.value)} placeholder="https://..." />
+          {initial?.id
+            ? <div><Input label="Reference Image URL" value={f.reference_image_url} readOnly disabled /><div className="text-[10px] text-zinc-600 mt-1">Change the reference from the character's reference gallery.</div></div>
+            : <Input label="Reference Image URL" value={f.reference_image_url} onChange={e=>set("reference_image_url",e.target.value)} placeholder="https://..." />}
         </div>
         <div>
           <label className={css.label}>Target Platforms</label>
@@ -332,13 +343,8 @@ function Characters({ characters, setCharacters }) {
   const [typeFilter, setTypeFilter] = useState("");
   const [detail, setDetail] = useState(null);
   const [generatingImage, setGeneratingImage] = useState(false);
-  const [imageHistory, setImageHistory] = useState([]);
-
-  // Load candidates / replaced references whenever a character is opened.
-  useEffect(() => {
-    if (!detail) { setImageHistory([]); return; }
-    api.characters.images(detail).then(r => setImageHistory(r.images || [])).catch(() => setImageHistory([]));
-  }, [detail]);
+  // Bumped after a generation so the gallery reloads from the server.
+  const [bibleRefresh, setBibleRefresh] = useState(0);
 
   const filtered = characters.filter(c =>
     (!search || [c.name,c.niche,c.persona].some(v=>(v||"").toLowerCase().includes(search.toLowerCase()))) &&
@@ -371,25 +377,13 @@ function Characters({ characters, setCharacters }) {
   const handleGenerateImage = async (id) => {
     setGeneratingImage(true);
     try {
-      const { candidate } = await api.characters.generateImage(id);
-      setImageHistory(h => [candidate, ...h.filter(i => i.id !== candidate.id)]);
+      await api.characters.generateImage(id);
+      setBibleRefresh(n => n + 1);
     } catch (err) {
       console.error("Generate image failed:", err);
       alert(`Image generation failed: ${err.message}`);
     } finally {
       setGeneratingImage(false);
-    }
-  };
-
-  const handleUseAsReference = async (charId, image, hasReference) => {
-    if (hasReference && !confirm("Replace the current reference image? The current one is kept in history.")) return;
-    try {
-      const r = await api.characters.setReferenceImage(charId, { imageId: image.id, replaceReference: hasReference });
-      setCharacters(cs => cs.map(c => c.id === charId ? normalizeChar(r.character) : c));
-      const refreshed = await api.characters.images(charId);
-      setImageHistory(refreshed.images || []);
-    } catch (err) {
-      alert(`Could not set reference image: ${err.message}`);
     }
   };
 
@@ -417,23 +411,11 @@ function Characters({ characters, setCharacters }) {
           </div>
         </div>
 
-        {imageHistory.length > 0 && (
-          <div className={`${css.card} p-4 mb-6`}>
-            <div className="text-xs text-zinc-500 mb-3">Generated images (the reference image only changes when you choose one)</div>
-            <div className="flex gap-3 overflow-x-auto">
-              {imageHistory.map(img => (
-                <div key={img.id} className="flex-shrink-0 w-28">
-                  <img src={img.imageUrl} alt="" className="w-28 h-28 object-cover rounded-lg border border-[#2a2a3a]" />
-                  <div className="text-[10px] text-zinc-500 mt-1">{img.status === "reference" ? "Current reference" : img.status === "replaced_reference" ? "Previous reference" : "Candidate"}</div>
-                  {img.status !== "reference" && img.imageUrl !== c.reference_image_url && (
-                    <button onClick={() => handleUseAsReference(c.id, img, Boolean(c.reference_image_url))}
-                      className="text-[10px] text-[#C8FF00] hover:underline">Use as reference</button>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        <CharacterBible
+          character={c}
+          refreshKey={bibleRefresh}
+          onCharacterChange={(updated) => setCharacters(cs => cs.map(x => x.id === updated.id ? normalizeChar(updated) : x))}
+        />
 
         <div className="grid grid-cols-4 gap-4 mb-6">
           {[["Followers",(c.follower_count||0).toLocaleString()],["Total Views",(c.total_views||0).toLocaleString()],["Engagement",`${c.engagement_rate||"0.00"}%`,true],["Platforms",(c.target_platforms||[]).join(", ")||"—"]].map(([l,v,volt])=>(
@@ -628,11 +610,14 @@ function ContentCalendar({ content, setContent, characters }) {
                 <div className="w-2 h-2 rounded-full flex-shrink-0" style={{background:TYPE_DOT[c.content_type]||"#71717a"}}/>
                 <div className="flex-1 min-w-0">
                   <div className="text-zinc-100 text-sm font-medium truncate">{c.title}</div>
-                  <div className="text-zinc-600 text-xs">{c.character_name} · {c.platform} · <span className={STATUS_CLS[c.status]||""}>{c.status}</span></div>
+                  <div className="text-zinc-600 text-xs">{c.character_name} · {c.platform} · <span className={STATUS_CLS[c.status]||""}>{c.status==="scheduled"?"scheduled (planned, not published)":c.status==="partially_published"?"partially published (some destinations)":c.status}</span></div>
+                  {c.scheduled_at&&<div className="text-zinc-500 text-xs">{new Date(c.scheduled_at).toLocaleString("en-US",{timeZone:c.schedule_timezone,dateStyle:"medium",timeStyle:"short"})} {c.schedule_timezone} · {new Date(c.scheduled_at).toISOString().slice(0,16).replace("T"," ")} UTC</div>}
+                  {c.status==="cancelled"&&c.cancel_reason&&<div className="text-zinc-500 text-xs">Cancelled: {c.cancel_reason}</div>}
                   {c.motion_prompt&&<div className="text-zinc-500 text-xs font-mono mt-0.5 truncate">"{c.motion_prompt}"</div>}
                 </div>
                 <div className="flex gap-2 text-xs">
-                  <button onClick={async()=>{try{await api.content.delete(c.id);setContent(cs=>cs.filter(x=>x.id!==c.id));}catch(e){console.error(e);}}} className="text-red-400 hover:underline">Delete</button>
+                  {!(c.from_approval&&c.status==="scheduled")&&<button onClick={async()=>{try{await api.content.delete(c.id);setContent(cs=>cs.filter(x=>x.id!==c.id));}catch(e){console.error(e);}}} className="text-red-400 hover:underline">Delete</button>}
+                  {c.from_approval&&c.status==="scheduled"&&<span className="text-zinc-500" title="Cancel from the pipeline item's content package">Cancel in Pipeline</span>}
                 </div>
               </div>
             ))}
@@ -719,7 +704,10 @@ function Campaigns({ campaigns, setCampaigns, characters }) {
     } catch(err) { console.error("Submit failed:", err); }
   };
 
-  const totalEarned = campaigns.reduce((s,c)=>s+(c.submissions||[]).reduce((a,b)=>a+parseFloat(b.payout||0),0),0);
+  const [moneySummary, setMoneySummary] = useState(null);
+  const [moneyOpen, setMoneyOpen] = useState(null);
+  const loadMoney = () => api.dashboard.get().then((d) => setMoneySummary(d.campaigns.money)).catch(() => {});
+  useEffect(() => { loadMoney(); }, [campaigns.length]);
   const totalSubs = campaigns.reduce((s,c)=>s+(c.submissions||[]).length,0);
   const daysLeft = d => { if(!d) return null; const diff=Math.ceil((new Date(d)-new Date())/(1000*60*60*24)); return diff; };
 
@@ -728,7 +716,7 @@ function Campaigns({ campaigns, setCampaigns, characters }) {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 style={{ fontFamily: "'Bebas Neue', sans-serif", letterSpacing: "0.1em" }} className="text-4xl text-zinc-100">CAMPAIGNS</h1>
-          <p className="text-zinc-500 text-sm mt-1">{campaigns.filter(c=>c.status==="active").length} active · ${totalEarned.toFixed(2)} earned</p>
+          <p className="text-zinc-500 text-sm mt-1">{campaigns.filter(c=>c.status==="active").length} active · planned, invoiced and received money kept separate</p>
         </div>
         <div className="flex gap-3">
           <a href="https://higgsfield.ai" target="_blank" rel="noreferrer" className={`${css.btnGhost} flex items-center gap-2`}><ExternalLink size={13}/>Higgsfield Earn</a>
@@ -739,7 +727,10 @@ function Campaigns({ campaigns, setCampaigns, characters }) {
       <div className="grid grid-cols-3 gap-4 mb-6">
         <StatCard label="Active Campaigns" value={campaigns.filter(c=>c.status==="active").length} />
         <StatCard label="Total Submissions" value={totalSubs} />
-        <StatCard label="Total Earned" value={`$${totalEarned.toFixed(2)}`} volt />
+        <div className={`${css.card} p-5`}>
+          <div className="text-[10px] uppercase tracking-wider text-zinc-600 mb-2">Money</div>
+          <div className="text-xs text-zinc-300 leading-relaxed">{moneySummary ? <MoneyStates summary={moneySummary} /> : "…"}</div>
+        </div>
       </div>
 
       {campaigns.length===0 ? (
@@ -773,16 +764,18 @@ function Campaigns({ campaigns, setCampaigns, characters }) {
                     )}
                   </div>
                   <div className="flex items-center gap-5 text-sm flex-shrink-0">
-                    {c.payout_amount&&<div className="text-center"><div className="font-mono text-[#C8FF00]">${parseFloat(c.payout_amount).toFixed(2)}</div><div className="text-[10px] text-zinc-600">payout</div></div>}
+                    {c.payout_amount&&<div className="text-center"><div className="font-mono text-[#C8FF00]">${parseFloat(c.payout_amount).toFixed(2)}</div><div className="text-[10px] text-zinc-600">planned payout</div></div>}
                     <div className="text-center"><div className="font-mono text-zinc-200">{(c.submissions||[]).length}</div><div className="text-[10px] text-zinc-600">submissions</div></div>
                     {c.deadline&&<div className="text-center"><div className={`font-mono text-xs ${dlCls}`}>{dl<0?"Expired":`${dl}d left`}</div><div className="text-[10px] text-zinc-600">{c.deadline}</div></div>}
                   </div>
                   <div className="flex gap-2 flex-shrink-0">
                     {c.status==="active"&&<button onClick={()=>setSubmitModal(c)} className={css.btnVolt+" text-xs"}>Submit Character</button>}
+                    <button onClick={()=>setMoneyOpen(moneyOpen===c.id?null:c.id)} aria-expanded={moneyOpen===c.id} className={`${css.btnGhost} text-xs`}>Money</button>
                     <button onClick={()=>{setCampForm({...c});setModal(c);}} className={`${css.btnGhost} text-xs`}>Edit</button>
                     <button onClick={async()=>{if(confirm("Delete?")){try{await api.campaigns.delete(c.id);setCampaigns(cs=>cs.filter(x=>x.id!==c.id));}catch(e){console.error(e);}}}} className={`${css.btnGhost} text-xs text-red-400 border-red-400/20 hover:border-red-400`}>Delete</button>
                   </div>
                 </div>
+                {moneyOpen===c.id && <CampaignMoney campaignId={c.id} currency={c.currency||"USD"} onChanged={loadMoney} />}
               </div>
             );
           })}
@@ -803,7 +796,7 @@ function Campaigns({ campaigns, setCampaigns, characters }) {
             </div>
             <div className="grid grid-cols-3 gap-3">
               <Select label="Platform" value={campForm.platform} onChange={e=>setC("platform",e.target.value)} options={PLATFORMS} />
-              <Input label="Payout ($)" type="number" value={campForm.payout_amount} onChange={e=>setC("payout_amount",e.target.value)} placeholder="0.00" />
+              <Input label="Planned payout (USD)" type="number" value={campForm.payout_amount} onChange={e=>setC("payout_amount",e.target.value)} placeholder="0.00" />
               <Input label="Deadline" type="date" value={campForm.deadline} onChange={e=>setC("deadline",e.target.value)} />
             </div>
             <Textarea label="Brief" value={campForm.brief} onChange={e=>setC("brief",e.target.value)} rows={3} placeholder="Campaign requirements and creative direction..." />
@@ -841,8 +834,11 @@ const NAV = [
   { id:"dashboard", icon:LayoutDashboard, label:"Dashboard" },
   { id:"characters", icon:Users, label:"Characters" },
   { id:"pipeline", icon:Zap, label:"Pipeline" },
+  { id:"jobs", icon:Activity, label:"Generation Jobs" },
   { id:"calendar", icon:CalendarDays, label:"Content Calendar" },
   { id:"campaigns", icon:Megaphone, label:"Campaigns" },
+  { id:"measurement", icon:TrendingUp, label:"Measurement" },
+  { id:"operations", icon:Eye, label:"Operations" },
 ];
 
 export default function App() {
@@ -906,11 +902,22 @@ export default function App() {
         ::-webkit-scrollbar-track { background: #09090f; }
         ::-webkit-scrollbar-thumb { background: #2a2a3a; border-radius: 2px; }
         ::-webkit-scrollbar-thumb:hover { background: #C8FF00; }
+        /* WHY: review must work on a phone (Package E). Below 768px the
+           sidebar becomes a top bar with a horizontally scrolling menu. */
+        @media (max-width: 767px) {
+          .app-shell { flex-direction: column !important; }
+          .app-aside { width: 100% !important; border-right: none !important; border-bottom: 1px solid #1e1e2a; }
+          .app-aside .app-brand { padding: 10px 16px !important; }
+          .app-aside .app-nav { flex-direction: row !important; overflow-x: auto; padding: 6px 10px !important; }
+          .app-aside .app-nav button { white-space: nowrap; flex-shrink: 0; }
+          .app-aside .app-aside-footer { display: none; }
+          .app-main { min-height: 0; }
+        }
       `}</style>
-      <div style={{ display:"flex", height:"100vh", overflow:"hidden", background:"#09090f" }}>
+      <div className="app-shell" style={{ display:"flex", height:"100vh", overflow:"hidden", background:"#09090f" }}>
         {/* Sidebar */}
-        <aside style={{ width:220, flexShrink:0, borderRight:"1px solid #1e1e2a", background:"#0d0d14", display:"flex", flexDirection:"column" }}>
-          <div style={{ padding:"20px", borderBottom:"1px solid #1e1e2a" }}>
+        <aside className="app-aside" style={{ width:220, flexShrink:0, borderRight:"1px solid #1e1e2a", background:"#0d0d14", display:"flex", flexDirection:"column" }}>
+          <div className="app-brand" style={{ padding:"20px", borderBottom:"1px solid #1e1e2a" }}>
             <div style={{ display:"flex", alignItems:"center", gap:10 }}>
               <div style={{ width:32, height:32, background:"#C8FF00", borderRadius:8, display:"flex", alignItems:"center", justifyContent:"center" }}>
                 <Zap size={15} color="#09090f" strokeWidth={2.5} />
@@ -921,7 +928,7 @@ export default function App() {
               </div>
             </div>
           </div>
-          <nav style={{ flex:1, padding:"12px 10px", display:"flex", flexDirection:"column", gap:2 }}>
+          <nav aria-label="Main" className="app-nav" style={{ flex:1, padding:"12px 10px", display:"flex", flexDirection:"column", gap:2 }}>
             {NAV.map(({id,icon:Icon,label})=>(
               <button key={id} onClick={()=>setPage(id)} style={{
                 display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:10, border:"none",
@@ -934,14 +941,14 @@ export default function App() {
               </button>
             ))}
           </nav>
-          <div style={{ padding:"16px 20px", borderTop:"1px solid #1e1e2a" }}>
+          <div className="app-aside-footer" style={{ padding:"16px 20px", borderTop:"1px solid #1e1e2a" }}>
             <div style={{ fontSize:11, color:"#3f3f50" }}>Powered by Higgsfield AI</div>
             <a href="https://higgsfield.ai" target="_blank" rel="noreferrer" style={{ fontSize:11, color:"#C8FF00", textDecoration:"none" }}>Open Studio →</a>
           </div>
         </aside>
 
         {/* Main */}
-        <main style={{ flex:1, overflowY:"auto" }}>
+        <main className="app-main" style={{ flex:1, overflowY:"auto" }}>
           {loading ? (
             <div className="flex items-center justify-center h-full">
               <div className="text-center">
@@ -954,7 +961,10 @@ export default function App() {
               {page==="dashboard" && <Dashboard characters={characters} content={content} campaigns={campaigns} />}
               {page==="characters" && <Characters characters={characters} setCharacters={apiSetCharacters} />}
               {page==="pipeline" && <PipelinePage characters={characters} />}
+              {page==="jobs" && <GenerationJobs />}
               {page==="calendar" && <ContentCalendar content={content} setContent={apiSetContent} characters={characters} />}
+              {page==="measurement" && <Measurement />}
+              {page==="operations" && <Operations />}
               {page==="campaigns" && <Campaigns campaigns={campaigns} setCampaigns={apiSetCampaigns} characters={characters} />}
             </>
           )}

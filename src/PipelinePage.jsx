@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import * as api from "./api.js";
+import ContentPackage from "./ContentPackage.jsx";
 import {
   TrendingUp, Sparkles, ImageIcon, MessageSquare, Check, X, Calendar,
   ChevronRight, Loader2, RefreshCw, ThumbsUp, ThumbsDown, Send,
@@ -62,6 +63,8 @@ export default function PipelinePage({ characters }) {
   const [activeStep, setActiveStep] = useState("trends");
   const [stageFilter, setStageFilter] = useState("all");
   const [selectedItem, setSelectedItem] = useState(null);
+  const [packageId, setPackageId] = useState(null);
+  const [ideaTopic, setIdeaTopic] = useState("");
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState("");
 
@@ -210,13 +213,12 @@ export default function PipelinePage({ characters }) {
   const scheduleItem = async (id) => {
     setBusy(true);
     try {
-      const today = new Date().toISOString().split("T")[0];
-      // Destination comes from the approved revision on the server.
-      await api.pipeline.schedule(id, { scheduledDate: today });
+      // Destination, time and time zone all come from the approved revision.
+      await api.pipeline.schedule(id);
       await load();
       setSelectedItem(null);
     } catch (err) {
-      console.error("Schedule error:", err);
+      setActionError(err.message);
     } finally {
       setBusy(false);
     }
@@ -269,14 +271,14 @@ export default function PipelinePage({ characters }) {
   );
 
   return (
-    <div className="p-6 max-w-[1400px] mx-auto">
+    <div className="p-3 sm:p-6 max-w-[1400px] mx-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 style={{ fontFamily:"'Bebas Neue', sans-serif", letterSpacing:"0.1em" }} className="text-3xl text-zinc-100">
             Content Pipeline
           </h1>
-          <p className="text-zinc-500 text-sm mt-1">Discover trends → Generate scripts → Create content → Approve & schedule</p>
+          <p className="text-zinc-500 text-sm mt-1">Collect ideas → Write scripts → Build the package → Approve & plan</p>
         </div>
         <div className="flex gap-3">
           <button onClick={load} className={css.btnGhost}>
@@ -300,6 +302,9 @@ export default function PipelinePage({ characters }) {
           </button>
         ))}
       </div>
+
+      {actionError && !selectedItem && <div className="text-xs text-red-400 mb-3" role="alert">{actionError}</div>}
+      {packageId && <ContentPackage itemId={packageId} onClose={() => setPackageId(null)} onChanged={load} />}
 
       <div className="grid grid-cols-12 gap-6">
         {/* ─── LEFT: Wizard Panel ─────────────────────── */}
@@ -357,8 +362,15 @@ export default function PipelinePage({ characters }) {
                   </div>
                   <button onClick={discoverTrends} disabled={busy} className={`${css.btnVolt} w-full mb-4`}>
                     {busy ? <Loader2 size={14} className="inline animate-spin mr-2" /> : <TrendingUp size={14} className="inline mr-2" />}
-                    Discover Trends
+                    Generate simulated ideas
                   </button>
+                  <div className="flex gap-2 mb-4">
+                    <input className={css.input} placeholder="Or add your own idea…" value={ideaTopic} onChange={e => setIdeaTopic(e.target.value)} />
+                    <button className={css.btnGhost} disabled={busy || ideaTopic.trim().length < 3}
+                      onClick={async () => { try { await api.pipeline.addIdea({ topic: ideaTopic.trim(), platform: discoverPlatform }); setIdeaTopic(""); await load(); } catch (e) { setActionError(e.message); } }}>
+                      Add idea
+                    </button>
+                  </div>
 
                   {/* Trend List */}
                   <div className="space-y-2 max-h-[300px] overflow-y-auto">
@@ -374,16 +386,26 @@ export default function PipelinePage({ characters }) {
                             <div className="text-xs text-zinc-500 mt-1 line-clamp-2">{t.description}</div>
                           </div>
                           <div className="flex items-center gap-2 ml-2">
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#C8FF00]/10 text-[#C8FF00] font-medium">
-                              {t.trendScore}%
-                            </span>
+                            {/* Only real, sourced data could carry a score; unknown stays unknown. */}
+                            {t.trendScore !== null && t.trendScore !== undefined && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#C8FF00]/10 text-[#C8FF00] font-medium">{t.trendScore}%</span>
+                            )}
                             <ChevronRight size={12} className="text-zinc-600" />
                           </div>
                         </div>
                         <div className="flex gap-1 mt-2">
                           <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400">{t.platform}</span>
-                          {t.provenance === "simulated_fixture" && (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300">Simulated</span>
+                          {(t.kind === "simulated_fixture" || (!t.kind && t.provenance === "simulated_fixture")) && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300">Simulated, not a real trend</span>
+                          )}
+                          {t.kind === "manual_idea" && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-700 text-zinc-300">Your idea</span>
+                          )}
+                          {t.kind === "observation" && (
+                            <a href={t.sourceUrl} target="_blank" rel="noreferrer noopener" onClick={(e) => e.stopPropagation()}
+                              className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/10 text-green-300">
+                              Observed {new Date(t.observedAt).toLocaleDateString()} · source
+                            </a>
                           )}
                           {(t.hashtags || []).slice(0, 3).map((h, i) => (
                             <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-500">{h}</span>
@@ -612,6 +634,10 @@ export default function PipelinePage({ characters }) {
                     </div>
 
                     {/* Expanded Detail */}
+                    {selectedItem?.id === item.id && item.scriptVersionId && (
+                      <button onClick={(e) => { e.stopPropagation(); setPackageId(item.id); window.scrollTo(0, 0); }}
+                        className="mt-2 text-xs text-[#C8FF00] hover:underline">Open content package</button>
+                    )}
                     {selectedItem?.id === item.id && (
                       <div className="mt-4 pt-4 border-t border-[#2a2a3a]">
                         {item.script && (

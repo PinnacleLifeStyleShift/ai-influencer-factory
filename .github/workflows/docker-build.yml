@@ -103,15 +103,33 @@ jobs:
           for i in $(seq 1 60); do curl -fsS http://127.0.0.1:4000/health && break; sleep 2; done
           curl -fsS http://127.0.0.1:4000/health
           docker logs api 2>&1 | grep -q "\[migrate\] Done."
-          # Authentication is enforced.
+          # Authentication is enforced; the owner token alone is not a session.
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4000/api/characters)" = "401"
-          # Authenticated read and write work against the migrated schema.
-          curl -fsS -H "Authorization: Bearer $API_TOKEN" http://127.0.0.1:4000/api/characters
-          curl -fsS -X POST -H "Authorization: Bearer $API_TOKEN" -H "Content-Type: application/json" \
+          curl -s -H "Authorization: Bearer $API_TOKEN" http://127.0.0.1:4000/api/characters | grep -q '"code":"SESSION_REQUIRED"'
+          # Exchange it for a session, then read and write against the migrated schema.
+          SESSION="$(curl -fsS -X POST -H "Authorization: Bearer $API_TOKEN" http://127.0.0.1:4000/api/auth/session | jq -r .sessionToken)"
+          case "$SESSION" in ses_*) ;; *) echo "no session"; exit 1 ;; esac
+          curl -fsS -H "Authorization: Bearer $SESSION" http://127.0.0.1:4000/api/characters
+          curl -fsS -X POST -H "Authorization: Bearer $SESSION" -H "Content-Type: application/json" \
             -d '{"name":"CI smoke"}' http://127.0.0.1:4000/api/characters | grep -q '"characterId":"INFL-001"'
           # Paid generation is blocked by default.
-          curl -fsS -H "Authorization: Bearer $API_TOKEN" http://127.0.0.1:4000/api/system/generation-policy \
+          curl -fsS -H "Authorization: Bearer $SESSION" http://127.0.0.1:4000/api/system/generation-policy \
             | grep -q '"liveCallsEnabled":false'
+          # Errors carry a correlation ID.
+          curl -s -D - -o /dev/null http://127.0.0.1:4000/api/characters | grep -qi '^x-request-id:'
+          # Signing out revokes the session.
+          curl -fsS -X POST -H "Authorization: Bearer $SESSION" http://127.0.0.1:4000/api/auth/logout
+          curl -s -H "Authorization: Bearer $SESSION" http://127.0.0.1:4000/api/characters | grep -q '"code":"SESSION_REVOKED"'
+          # Ready = database answers and every migration is applied.
+          curl -fsS http://127.0.0.1:4000/ready | grep -q '"status":"ready"'
+          # Runs as a non-root user; the config audit is logged by name, never the token.
+          test "$(docker exec api id -u)" != "0"
+          docker logs api 2>&1 | grep -q "\[config\] INFO LIVE_PROVIDER_CALLS: disabled"
+          ! docker logs api 2>&1 | grep -q "$API_TOKEN"
+          # Graceful shutdown on SIGTERM (what a redeploy sends).
+          docker stop -t 30 api
+          docker logs api 2>&1 | grep -q "\[shutdown\] done"
+          docker start api
 
       - name: Smoke test backend image (restart is a no-op migration)
         run: |
@@ -130,6 +148,10 @@ jobs:
           ! docker exec web sh -c 'grep -l "api-production-5a00" dist/assets/*.js'
           # serve comes from the lockfile with the patched compression.
           docker exec web sh -c 'node -p "require(\"./node_modules/compression/package.json\").version"' | grep -qx "1.8.2"
+          # Security headers, with the API as the only allowed connection; non-root.
+          curl -s -D - -o /dev/null http://127.0.0.1:3000/ | grep -qi "^content-security-policy:.*connect-src 'self' http://127.0.0.1:4000"
+          curl -s -D - -o /dev/null http://127.0.0.1:3000/characters | grep -qi "^x-frame-options: DENY"
+          test "$(docker exec web id -u)" != "0"
 
       - name: Container logs
         if: always()

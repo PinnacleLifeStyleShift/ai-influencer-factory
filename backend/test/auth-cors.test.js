@@ -105,3 +105,19 @@ test("CORS preflight allows the Idempotency-Key header for listed origins only",
     assert.equal(evil.headers.get("access-control-allow-origin"), null);
   } finally { await app.close(); }
 });
+
+test("route variants are not distinct routes, and CORS is not an identity control", async () => {
+  const app = await startApp({ env: { OWNER_API_TOKEN: TOKEN, FRONTEND_URL: "https://app.example.test" } });
+  try {
+    // Without a session every variant is refused; a mixed-case mount is no route at all.
+    for (const p of ["/api/characters/x/generate-image", "/api/characters/x/generate-image/", "/api/characters/x/GENERATE-IMAGE"]) {
+      assert.equal((await app.raw(p, { method: "POST", body: {} })).status, 401, p);
+    }
+    assert.equal((await app.raw("/API/characters/x/generate-image", { method: "POST", body: {} })).status, 404);
+    assert.equal((await app.raw("/api//characters", { body: undefined })).status, 404, "repeated separator refused");
+    // An allowed origin gets CORS headers but no identity: still 401 without a session.
+    const r = await app.raw("/api/characters", { headers: { Origin: "https://app.example.test" } });
+    assert.equal(r.status, 401);
+    assert.equal(r.headers.get("access-control-allow-origin"), "https://app.example.test");
+  } finally { await app.close(); }
+});

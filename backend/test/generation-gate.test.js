@@ -13,7 +13,7 @@ const FULL_ENV = {
   PROVIDER_PRICES_USD: JSON.stringify({ "higgsfield:soul": "1.00" }),
   SPEND_CAP_PER_JOB_USD: "2",
   SPEND_CAP_DAILY_USD: "3",
-  SPEND_CAP_MONTHLY_USD: "10",
+  SPEND_CAP_MONTHLY_USD: "10", PRICE_CURRENCY: "USD", PRICE_VERSION: "test-fixture-v1", SPEND_CAP_TIMEZONE: "UTC",
 };
 const quietLog = { error() {} };
 

@@ -61,7 +61,7 @@ function leonardoAspectRatio(aspectRatio) {
   return mapping[aspectRatio] || { width: 1024, height: 1024 };
 }
 
-async function generateWithLeonardo(prompt, options = {}) {
+async function generateWithLeonardo(prompt, options = {}, ctx = {}) {
   const apiKey = process.env.LEONARDO_API_KEY;
   if (!apiKey) throw new ProviderError("LEONARDO_API_KEY not configured", { submitted: false });
 
@@ -100,6 +100,8 @@ async function generateWithLeonardo(prompt, options = {}) {
   if (!generationId) {
     throw new Error("Leonardo did not return a generationId");
   }
+  // Accepted: record the provider's id so an interrupted job can be reconciled.
+  await ctx.onAccepted?.(generationId);
 
   return await pollLeonardo(generationId, apiKey);
 }
@@ -156,7 +158,7 @@ function higgsAspectRatio(aspectRatio) {
   return mapping[aspectRatio] || "1536x1536";
 }
 
-async function generateWithHiggsfield(prompt, options = {}) {
+async function generateWithHiggsfield(prompt, options = {}, ctx = {}) {
   const apiKey = process.env.HIGGSFIELD_API_KEY;
   const secret = process.env.HIGGSFIELD_SECRET;
   if (!apiKey || !secret) {
@@ -196,6 +198,8 @@ async function generateWithHiggsfield(prompt, options = {}) {
 
   const data = await response.json();
   if (data?.job_set_id) {
+    // Accepted: record the provider's id so an interrupted job can be reconciled.
+    await ctx.onAccepted?.(data.job_set_id);
     return await pollHiggsfield(data.job_set_id, apiKey, secret);
   }
 
@@ -253,15 +257,26 @@ async function pollHiggsfield(jobSetId, apiKey, secret, maxAttempts = 30) {
 // Adapter registry and public API
 // ---------------------------------------------------------------------------
 
-/** Keyed by "provider:model". Presence here does not mean approved. */
+/**
+ * Keyed by "provider:model". Presence here does not mean approved.
+ *
+ * capabilities declare what an adapter really sends. WHY: storing a reference
+ * URL proves nothing about identity consistency if the adapter never sends
+ * it; requests that need a capability are refused before any spend.
+ *  - referenceConditioning: reference images are sent to steer identity
+ *  - sourceImage: an input image is animated/edited (image-to-video)
+ * The recovered Higgsfield and Leonardo calls are text-to-image only.
+ */
 export const imageAdapters = {
   "higgsfield:soul": {
-    generate: ({ prompt, options }) =>
-      generateWithHiggsfield(prompt, options).then((imageUrl) => ({ imageUrl })),
+    capabilities: { referenceConditioning: false, sourceImage: false },
+    generate: ({ prompt, options }, ctx) =>
+      generateWithHiggsfield(prompt, options, ctx).then((imageUrl) => ({ imageUrl })),
   },
   "leonardo:phoenix": {
-    generate: ({ prompt, options }) =>
-      generateWithLeonardo(prompt, options).then((imageUrl) => ({ imageUrl })),
+    capabilities: { referenceConditioning: false, sourceImage: false },
+    generate: ({ prompt, options }, ctx) =>
+      generateWithLeonardo(prompt, options, ctx).then((imageUrl) => ({ imageUrl })),
   },
 };
 
