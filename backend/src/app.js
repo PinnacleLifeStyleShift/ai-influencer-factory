@@ -27,6 +27,7 @@ import { rateLimit } from "./middleware/rateLimit.js";
 import { createGenerationGate, selectLedger } from "./services/generationGate.js";
 import { createPrismaLedger } from "./services/spendLedger.js";
 import { createMediaStore } from "./services/mediaStore.js";
+import { assemblyCapability, assemble } from "./services/mediaAssembly.js";
 import { configFindings, readiness } from "./services/opsChecks.js";
 import { createPublishingGate } from "./services/publishingGate.js";
 import { defaultPublishers } from "./services/publishers.js";
@@ -40,8 +41,9 @@ import { videoAdapters } from "./services/videoGeneration.js";
  * Builds the Express app without listening, so it can be tested locally with
  * a fake Prisma client and no network access.
  */
-export function createApp({ prisma, env = process.env, gate, logRequests = true, sessions, authProvider, mediaStore, publishers, publishFaults, publishClock, metricsProviders } = {}) {
+export function createApp({ prisma, env = process.env, gate, logRequests = true, sessions, authProvider, mediaStore, publishers, publishFaults, publishClock, metricsProviders, assembly } = {}) {
   const media = mediaStore || createMediaStore(env);
+  const mediaAssembly = assembly || { capability: () => assemblyCapability(env), assemble };
   // Publishing: real platforms are not implemented; the gate fails closed.
   const publishing = { gate: createPublishingGate({ env, publishers: publishers || defaultPublishers(env) }), faults: publishFaults || null, now: publishClock || (() => new Date()) };
   const sessionStore = sessions || createSessionStore(prisma);
@@ -109,6 +111,7 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
     req.generationGate = generationGate;
     req.mediaStore = media;
     req.publishing = publishing;
+    req.assembly = mediaAssembly;
     next();
   });
 

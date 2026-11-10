@@ -168,6 +168,13 @@ export default function ReviewExport({ item, hasShots, onChanged }) {
         <div>
           <div className={sub}>Export (a download; nothing is posted)</div>
           {hasShots && !scheduled && <button className={`${ghost} mb-2 mr-2`} disabled={busy} onClick={measure}>Measure clip lengths from files</button>}
+          {hasShots && !scheduled && (
+            <button className={`${ghost} mb-2 mr-2`} disabled={busy}
+              onClick={() => quiet(run(() => api.pipeline.assemble(item.id), "Rendered into one video from the measured clips. Approval was cleared: review the rendered file."))}>
+              Render one video from the clips
+            </button>
+          )}
+          {item.renderedAssetId && <div className="text-[11px] text-zinc-400 mb-2">Distributed as the rendered file (its hash is part of the approval).</div>}
           <button className={btn} disabled={busy || !item.approvalCurrent} onClick={doExport}
             title={item.approvalCurrent ? "" : "Only the current approved version can be exported"}>
             Export approved version

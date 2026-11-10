@@ -7,6 +7,7 @@ import { inspectMedia } from "../services/mediaInspect.js";
 import { claimIsLive } from "./pipeline.js";
 import { invalidatingChange } from "../lib/revision.js";
 import { rightsHoldError } from "../services/rights.js";
+import { measurePackage } from "../services/shotPlan.js";
 
 /**
  * Export of approved content, and measuring stored media.
@@ -120,6 +121,76 @@ router.post("/:id/measure-media", ["edit"], handle("POST /pipeline/:id/measure-m
     if (count !== 1) throw new ApiError("REVISION_CONFLICT", 409, "The item changed meanwhile; reload and retry");
   }
   res.json({ success: results.every((r) => r.ok), changed, results });
+}));
+
+// POST /api/pipeline/:id/assemble -> { asset, pipelineItem, replayed }
+// Renders the measured shot clips into one video (deterministic), stores it as
+// an AssetVersion and points the item's videoUrl at it. That is a change to
+// the package, so approval is cleared and must be given for the rendered file.
+router.post("/:id/assemble", ["edit"], handle("POST /pipeline/:id/assemble", async (req, res) => {
+  const prisma = req.prisma;
+  const item = await prisma.pipelineItem.findUnique({ where: { id: req.params.id } });
+  if (!item) throw notFound();
+  if (["scheduled", "published"].includes(item.stage)) throw new ApiError("ALREADY_SCHEDULED", 409, "Scheduled or published items cannot be changed");
+  if (claimIsLive(item)) throw new ApiError("GENERATION_IN_PROGRESS", 409, "A generation for this item is in progress; wait for it to finish");
+  const sv = item.scriptVersionId ? await prisma.scriptVersion.findUnique({ where: { id: item.scriptVersionId } }) : null;
+  const plan = sv?.shotPlan || [];
+  if (!plan.length) throw new ApiError("PACKAGE_INCOMPLETE", 409, "There is no shot plan to assemble");
+  const m = measurePackage(plan, item.shotMedia, sv.targetDurationSec);
+  if (!m.complete || !m.verified || !m.check.withinTolerance) {
+    throw new ApiError("PACKAGE_INCOMPLETE", 409, "Every shot needs a clip with a measured length, within tolerance, before assembly",
+      { complete: m.complete, verified: m.verified, check: m.check });
+  }
+  const cap = req.assembly.capability();
+  if (!cap.available) throw new ApiError("ASSEMBLY_UNAVAILABLE", 503, `Assembly is not available: ${cap.reason}`);
+  if (!req.mediaStore?.configured || !req.mediaStore.writable) throw new ApiError("MEDIA_STORE_NOT_CONFIGURED", 409, "Assembly needs writable media storage, which is not configured");
+
+  const clips = [];
+  const failures = [];
+  for (const shot of [...plan].sort((a, b) => a.index - b.index)) {
+    const media = (item.shotMedia || []).find((x) => x.shotIndex === shot.index && x.shotKey === shot.shotKey);
+    const read = await req.mediaStore.read(media.url);
+    const info = read.ok ? inspectMedia(read.bytes, { expectedKind: "video" }) : null;
+    if (!info?.ok) { failures.push({ shotIndex: shot.index, problems: info ? info.problems : [read.problem] }); continue; }
+    clips.push({ bytes: read.bytes, trimSec: Math.min(shot.durationSec, info.durationSec), shotIndex: shot.index, shotKey: shot.shotKey, sha256: info.sha256 });
+  }
+  if (failures.length) throw new ApiError("ASSEMBLY_INPUT_INVALID", 422, "Some clips failed verification; nothing was assembled", { failures });
+
+  let out;
+  try {
+    out = await req.assembly.assemble(clips.map((c) => ({ bytes: c.bytes, trimSec: c.trimSec })), { aspectRatio: item.exportSettings?.aspectRatio || "9:16", tool: cap.tool });
+  } catch (err) {
+    throw new ApiError(err.code || "ASSEMBLY_FAILED", err.code === "ASSEMBLY_TIMEOUT" ? 504 : 422, err.message);
+  }
+  const info = inspectMedia(out.bytes, { expectedKind: "video" });
+  const plannedSec = Math.round(clips.reduce((t, c) => t + c.trimSec, 0) * 1000) / 1000;
+  if (!info.ok || Math.abs(info.durationSec - plannedSec) > 0.5) {
+    throw new ApiError("ASSEMBLY_FAILED", 422, "The assembled file does not match the plan", { problems: info.problems, measuredSec: info.durationSec, plannedSec });
+  }
+  const name = `rendered-${info.sha256.slice(0, 24)}.mp4`;
+  const stored = await req.mediaStore.write(name, out.bytes);
+  if (!stored.ok) throw new ApiError("MEDIA_STORE_NOT_CONFIGURED", 409, `Could not store the rendered file: ${stored.problem}`);
+  const provenance = {
+    shots: clips.map((c) => ({ shotIndex: c.shotIndex, shotKey: c.shotKey, clipSha256: c.sha256, trimSec: c.trimSec })),
+    tool: out.tool, settings: { aspectRatio: item.exportSettings?.aspectRatio || "9:16", fps: 30, codec: "h264", audio: "none", captions: "not burned in" },
+    decodeCheck: "full decode passed", plannedSec,
+  };
+  let asset = await prisma.assetVersion.findUnique({ where: { pipelineItemId_contentHash: { pipelineItemId: item.id, contentHash: info.sha256 } } });
+  if (!asset) {
+    asset = await prisma.assetVersion.create({ data: {
+      pipelineItemId: item.id, kind: "rendered", contentHash: info.sha256, mime: info.mime, bytes: info.bytes, width: info.width, height: info.height,
+      codec: "h264", durationSec: info.durationSec, storageRef: stored.url, provenance, createdBy: req.principal?.role || null,
+    } });
+  }
+  const replayed = item.videoUrl === stored.url && item.renderedAssetId === asset.id;
+  if (!replayed) {
+    const { count } = await prisma.pipelineItem.updateMany({
+      where: { id: item.id, revision: item.revision, stage: item.stage, generationClaim: null },
+      data: invalidatingChange({ videoUrl: stored.url, renderedAssetId: asset.id }, item.stage === "approved" ? "review" : undefined),
+    });
+    if (count !== 1) throw new ApiError("REVISION_CONFLICT", 409, "The item changed meanwhile; reload and retry");
+  }
+  res.status(replayed ? 200 : 201).json({ success: true, replayed, asset, pipelineItem: await prisma.pipelineItem.findUnique({ where: { id: item.id } }) });
 }));
 
 export default router;

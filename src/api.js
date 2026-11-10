@@ -258,6 +258,7 @@ export const pipeline = {
   cancelSchedule: (id, reason) =>
     request(`/api/pipeline/${id}/cancel-schedule`, { method: "POST", body: JSON.stringify({ reason }) }),
   measureMedia: (id) => request(`/api/pipeline/${id}/measure-media`, { method: "POST", body: "{}" }),
+  assemble: (id) => request(`/api/pipeline/${id}/assemble`, { method: "POST", body: "{}" }),
   exports: (id) => request(`/api/pipeline/${id}/exports`),
   createExport: (id) => request(`/api/pipeline/${id}/exports`, { method: "POST", body: "{}" }),
   /** Downloads an export (authenticated) and returns { blob, filename, current }. */
