@@ -3,7 +3,9 @@
  * Applies committed Prisma migrations. Replaces `prisma db push`.
  *
  * Databases created before migrations existed (by `prisma db push` from the
- * schema at commit 277d2d3) have tables but no _prisma_migrations history.
+ * schema at commit 277d2d3) have tables but no applied migration: either no
+ * _prisma_migrations table, an empty one, or only a failed attempt to apply
+ * the baseline on top of the existing tables.
  * For those, this script first VERIFIES that the live schema is identical to
  * prisma/baseline/277d2d3.schema.prisma, and only then records the baseline
  * migration as already applied. If the schema differs in any way it stops
@@ -35,7 +37,15 @@ async function inspect() {
     const [row] = await client.$queryRaw`
       SELECT to_regclass('_prisma_migrations') IS NOT NULL AS has_history,
              to_regclass('characters') IS NOT NULL AS has_tables`;
-    return { hasHistory: row.has_history, hasTables: row.has_tables };
+    let applied = 0;
+    let failed = [];
+    if (row.has_history) {
+      const rows = await client.$queryRawUnsafe(
+        `SELECT migration_name, finished_at, rolled_back_at FROM _prisma_migrations`);
+      applied = rows.filter((r) => r.finished_at && !r.rolled_back_at).length;
+      failed = [...new Set(rows.filter((r) => !r.finished_at && !r.rolled_back_at).map((r) => r.migration_name))];
+    }
+    return { hasTables: row.has_tables, applied, failed };
   } finally {
     await client.$disconnect();
   }
@@ -43,10 +53,19 @@ async function inspect() {
 
 async function main() {
   if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is not set");
-  const { hasHistory, hasTables } = await inspect();
+  const { hasTables, applied, failed } = await inspect();
 
-  if (!hasHistory && hasTables) {
-    console.log("[migrate] Existing database without migration history; verifying it matches the baseline schema...");
+  // A legacy (db push) database has tables but no successfully applied
+  // migration. Its _prisma_migrations table may be missing, empty (created by
+  // running `prisma migrate deploy` before any migration existed), or hold a
+  // failed attempt to apply the baseline itself on top of the existing tables.
+  if (hasTables && applied === 0) {
+    const other = failed.filter((m) => m !== BASELINE_MIGRATION);
+    if (other.length) {
+      console.error(`[migrate] REFUSED: failed migrations other than the baseline are recorded (${other.join(", ")}). Nothing was changed.`);
+      process.exit(1);
+    }
+    console.log("[migrate] Existing database without applied migrations; verifying it matches the baseline schema...");
     // --exit-code: 0 = no difference, 2 = differences, 1 = error.
     const diff = prisma(
       ["migrate", "diff", "--from-config-datasource", "--to-schema", BASELINE_SCHEMA, "--exit-code"],
@@ -56,6 +75,12 @@ async function main() {
       console.error("[migrate] REFUSED: the database schema differs from the 277d2d3 baseline. Nothing was changed.");
       console.error("[migrate] Differences (database -> baseline):\n" + diff.stdout);
       process.exit(1);
+    }
+    if (failed.includes(BASELINE_MIGRATION)) {
+      // The failed attempt changed nothing (the schema still equals the
+      // baseline, verified above), so it is marked rolled back first.
+      prisma(["migrate", "resolve", "--rolled-back", BASELINE_MIGRATION]);
+      console.log(`[migrate] Earlier failed attempt at ${BASELINE_MIGRATION} marked rolled back (schema verified unchanged).`);
     }
     prisma(["migrate", "resolve", "--applied", BASELINE_MIGRATION]);
     console.log(`[migrate] Baseline ${BASELINE_MIGRATION} recorded as applied (schema verified identical).`);

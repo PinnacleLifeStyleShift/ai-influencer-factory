@@ -93,6 +93,56 @@ test("legacy database that drifted from the baseline is refused and left untouch
   });
 });
 
+// Production's first deploy: the db-push database already had an empty
+// _prisma_migrations table, so the baseline check was skipped and
+// `prisma migrate deploy` tried the baseline on top of the existing tables
+// (42P07 "relation already exists"), recording a failed attempt.
+async function legacyWithFailedBaseline(schema, { emptyHistory = false } = {}) {
+  legacyPush(schema);
+  await withClient(schema, (c) => c.$executeRawUnsafe(
+    `INSERT INTO characters (id, character_id, name, updated_at) VALUES ('ch1', 'INFL-001', 'Synthetic Legacy', now())`));
+  // The empty history table, as `prisma migrate deploy` creates it when run
+  // with no migrations (the old revision had a db:migrate script).
+  await withClient(schema, (c) => c.$executeRawUnsafe(`CREATE TABLE "_prisma_migrations" (
+    "id" VARCHAR(36) PRIMARY KEY NOT NULL, "checksum" VARCHAR(64) NOT NULL, "finished_at" TIMESTAMPTZ,
+    "migration_name" VARCHAR(255) NOT NULL, "logs" TEXT, "rolled_back_at" TIMESTAMPTZ,
+    "started_at" TIMESTAMPTZ NOT NULL DEFAULT now(), "applied_steps_count" INTEGER NOT NULL DEFAULT 0)`));
+  const raw = run("npx", ["prisma", "migrate", "deploy"], schema);
+  assert.notEqual(raw.status, 0);
+  assert.match(raw.stdout + raw.stderr, /already exists/);
+  if (emptyHistory) await withClient(schema, (c) => c.$executeRawUnsafe(`DELETE FROM _prisma_migrations`));
+}
+
+for (const emptyHistory of [false, true]) {
+  test(`legacy database with ${emptyHistory ? "an empty migration history" : "a failed baseline attempt"} is verified, then recovered`, opts, async () => {
+    const schema = emptyHistory ? "mig_empty_history" : "mig_failed_init";
+    await legacyWithFailedBaseline(schema, { emptyHistory });
+    const r = migrateDeploy(schema);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /schema verified identical/);
+    if (!emptyHistory) assert.match(r.stdout, /marked rolled back/);
+    assert.ok(schemaMatches(schema));
+    await withClient(schema, async (c) => {
+      assert.equal((await appliedMigrations(c)).length, 16);
+      const [ch] = await c.$queryRawUnsafe(`SELECT name FROM characters WHERE id = 'ch1'`);
+      assert.equal(ch.name, "Synthetic Legacy");
+    });
+    assert.equal(migrateDeploy(schema).status, 0, "re-running is a no-op");
+  });
+}
+
+test("a drifted legacy database with an empty or failed history is still refused and left untouched", opts, async () => {
+  await legacyWithFailedBaseline("mig_failed_drift");
+  await withClient("mig_failed_drift", (c) => c.$executeRawUnsafe(`ALTER TABLE characters ADD COLUMN manual_extra TEXT`));
+  const r = migrateDeploy("mig_failed_drift");
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /REFUSED/);
+  await withClient("mig_failed_drift", async (c) => {
+    assert.deepEqual(await appliedMigrations(c), []);
+    assert.ok(!(await columns(c, "characters")).includes("image_generations"), "no migration applied");
+  });
+});
+
 test("no deploy path still uses prisma db push", opts, async () => {
   const { readFileSync } = await import("node:fs");
   const pkg = JSON.parse(readFileSync("package.json", "utf8"));
