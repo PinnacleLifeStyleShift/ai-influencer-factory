@@ -7,7 +7,8 @@ Statuses are kept separate, as the prompt requires:
 - **Code present.**
 - **Locally tested.**
 - **Hosted CI:** green at the exact head.
-- **Deployed:** `2851948` on both Railway services (api and frontend), 10 November 2026. Production database migrated (all 16 migrations applied). **The API refuses every request until the owner sets `OWNER_API_TOKEN`.**
+- **Deployed:** `022d448` on both Railway services (api and frontend), 10 November 2026. Production database migrated (all 16 migrations applied). `OWNER_API_TOKEN` is set on the api service (checked by variable name only), and the redeploy logged no configuration error.
+- **Remediation of 10 November (AIF 1–3):** see `remediation-2026-11-10.md`. It is not merged or deployed.
 - **Accepted by the intended user:** none yet.
 
 ## PRs added for this prompt (all merged into `main`)
@@ -98,13 +99,13 @@ Desktop and phone captures are in `docs/screenshots/`. New in this round: `pkg-m
 
 - **Not run:** anything against production or live providers; browser video playback (Chromium has no H.264); signed-link expiry (no signed links exist).
 - **Remaining owner actions:**
-  1. **`OWNER_API_TOKEN`:** set it on the api service (at least 32 random characters). Until then the API refuses all requests.
+  1. **`OWNER_API_TOKEN`:** set on 10 November through the Railway connection, so its value appears in that session's tool log. Replace it with one the owner generates.
   2. **Private media storage:** approval and its retention policy.
   3. **ffmpeg in production:** whether the API image should include it.
   4. **Paid generation:** provider/model approval, prices, caps.
   5. **Login provider, publishing accounts, analytics access.**
   6. **Provider keys:** the api service still holds keys from the old build. The owner chose to keep them; they are unused while `LIVE_PROVIDER_CALLS` is unset.
 - **Next safe action:**
-  1. The owner sets `OWNER_API_TOKEN`.
+  1. The owner replaces `OWNER_API_TOKEN` with a value only they have seen.
   2. Then check that `/api/characters` without a session returns 401, and that signing in with the token works.
   3. Then run the synthetic export workflow on the released revision.

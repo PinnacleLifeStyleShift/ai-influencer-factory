@@ -6,7 +6,7 @@ Recorded 2026-11-10 for the completion brief v1.0 (9 November 2026). Evidence la
 
 **Bottom line:** every package in the brief is built and tested with mocks, synthetic media and throwaway databases.
 
-> **Update, 10 November 2026:** PRs #1–#16 are merged and `2851948` is DEPLOYED on both services. The production database is migrated. The API refuses all requests until the owner sets `OWNER_API_TOKEN`. See `ai-influencer-prompt-evidence.md`. Nothing is LIVE-VERIFIED yet.
+> **Update, 10 November 2026:** PRs #1–#17 are merged and `022d448` is DEPLOYED on both services. The production database is migrated, and `OWNER_API_TOKEN` is set (checked by name only). The AIF 1–3 remediation is in `remediation-2026-11-10.md`; it is not merged or deployed. See `ai-influencer-prompt-evidence.md`. Nothing is LIVE-VERIFIED yet.
 
 **The MVP is not yet complete by the brief's own definition**, which requires the private end-to-end export workflow verified in production. That needs two things:
 
@@ -86,7 +86,7 @@ Twelve committed migrations exist. All are additive except one data change in `2
 
 ## Owner decisions still open
 
-1. **`OWNER_API_TOKEN`:** set it on the api service. `FRONTEND_URL` and `TRUST_PROXY` are set, and the owner took a backup before the deploy.
+1. **`OWNER_API_TOKEN`:** set, but through the Railway connection, so its value appears in that session's tool log. The owner should replace it. `FRONTEND_URL` and `TRUST_PROXY` are set, and the owner took a backup before the deploy.
 2. **Character, audience and platform:** the initial character, audience and platform.
 3. **Login provider:** which login provider replaces the owner token.
 4. **Higgsfield:** API access, model and commercial rights.

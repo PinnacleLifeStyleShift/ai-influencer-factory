@@ -671,9 +671,14 @@ model MetricObservation {
   recordedAt    DateTime  @default(now()) @map("recorded_at")
   retractedAt   DateTime? @map("retracted_at")
   retractReason String?   @map("retract_reason")
+  // A later reading of the same window of the same series replaced this one.
+  // The row is kept as history; only unsuperseded, unretracted rows count.
+  supersededAt   DateTime? @map("superseded_at")
+  supersededById String?   @map("superseded_by_id")
 
   @@index([subjectType, subjectId, metric])
   @@index([observedAt])
+  @@index([subjectType, subjectId, metric, periodStart, periodEnd])
   @@map("metric_observations")
 }
 
@@ -741,6 +746,30 @@ model AssetVersion {
   @@unique([pipelineItemId, contentHash])
   @@index([pipelineItemId])
   @@map("asset_versions")
+}
+
+/// What one rendered AssetVersion was assembled from, by stable identity
+/// (never by URL): per input clip its checksum and its source, either a
+/// generation application (keyed by its reservation), another AssetVersion
+/// (a nested assembly) or a manual clip with no generation. Written with the
+/// asset; never updated. Export follows it to re-check rights and to count
+/// each paid generation once.
+model AssetLineageInput {
+  id                  String   @id @default(cuid())
+  assetVersionId      String   @map("asset_version_id")
+  position            Int
+  shotIndex           Int?     @map("shot_index")
+  shotKey             String?  @map("shot_key")
+  clipSha256          String   @map("clip_sha256")
+  inputKind           String   @map("input_kind") // generation | asset_version | manual
+  reservationId       String?  @map("reservation_id")
+  inputAssetVersionId String?  @map("input_asset_version_id")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  @@unique([assetVersionId, position])
+  @@index([reservationId])
+  @@index([inputAssetVersionId])
+  @@map("asset_lineage_inputs")
 }
 
 /// Runtime operational switches the owner can change without a redeploy

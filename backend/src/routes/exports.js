@@ -4,6 +4,7 @@ import { ApiError, routeError } from "../lib/errors.js";
 import { snapshotHash } from "../lib/revision.js";
 import { isUniqueViolation } from "../lib/requests.js";
 import { buildExport, approvalIsCurrent, readableManifest } from "../services/exportManifest.js";
+import { clipSource } from "../services/assetLineage.js";
 import { inspectMedia } from "../services/mediaInspect.js";
 import { claimIsLive } from "./pipeline.js";
 import { invalidatingChange } from "../lib/revision.js";
@@ -180,9 +181,17 @@ router.post("/:id/assemble", ["edit"], handle("POST /pipeline/:id/assemble", asy
     const read = await req.mediaStore.read(media.url);
     const info = read.ok ? inspectMedia(read.bytes, { expectedKind: "video" }) : null;
     if (!info?.ok) { failures.push({ shotIndex: shot.index, problems: info ? info.problems : [read.problem] }); continue; }
-    clips.push({ bytes: read.bytes, trimSec: Math.min(shot.durationSec, info.durationSec), shotIndex: shot.index, shotKey: shot.shotKey, sha256: info.sha256 });
+    clips.push({ bytes: read.bytes, trimSec: Math.min(shot.durationSec, info.durationSec), shotIndex: shot.index, shotKey: shot.shotKey, sha256: info.sha256, media });
   }
   if (failures.length) throw new ApiError("ASSEMBLY_INPUT_INVALID", 422, "Some clips failed verification; nothing was assembled", { failures });
+  // Where each clip came from, by stable identity; unverifiable sources
+  // refuse the assembly rather than produce a file without lineage.
+  const lineage = [];
+  for (const [position, c] of clips.entries()) {
+    const src = await clipSource(prisma, item, { ...c.media, shotIndex: c.shotIndex });
+    lineage.push({ position, shotIndex: c.shotIndex, shotKey: c.shotKey, clipSha256: c.sha256, inputKind: src.inputKind,
+      reservationId: src.reservationId || null, inputAssetVersionId: src.inputAssetVersionId || null });
+  }
 
   let out;
   try {
@@ -205,10 +214,18 @@ router.post("/:id/assemble", ["edit"], handle("POST /pipeline/:id/assemble", asy
   };
   let asset = await prisma.assetVersion.findUnique({ where: { pipelineItemId_contentHash: { pipelineItemId: item.id, contentHash: info.sha256 } } });
   if (!asset) {
-    asset = await prisma.assetVersion.create({ data: {
-      pipelineItemId: item.id, kind: "rendered", contentHash: info.sha256, mime: info.mime, bytes: info.bytes, width: info.width, height: info.height,
-      codec: "h264", durationSec: info.durationSec, storageRef: stored.url, provenance, createdBy: req.principal?.role || null,
-    } });
+    asset = await prisma.$transaction(async (tx) => {
+      const a = await tx.assetVersion.create({ data: {
+        pipelineItemId: item.id, kind: "rendered", contentHash: info.sha256, mime: info.mime, bytes: info.bytes, width: info.width, height: info.height,
+        codec: "h264", durationSec: info.durationSec, storageRef: stored.url, provenance, createdBy: req.principal?.role || null,
+      } });
+      await tx.assetLineageInput.createMany({ data: lineage.map((l) => ({ ...l, assetVersionId: a.id })) });
+      return a;
+    });
+  } else if (!(await prisma.assetLineageInput.count({ where: { assetVersionId: asset.id } }))) {
+    // An asset rendered before lineage was recorded: the same deterministic
+    // inputs produced the same bytes, so their lineage is this asset's.
+    await prisma.assetLineageInput.createMany({ data: lineage.map((l) => ({ ...l, assetVersionId: asset.id })), skipDuplicates: true });
   }
   const replayed = item.videoUrl === stored.url && item.renderedAssetId === asset.id;
   if (!replayed) {

@@ -121,6 +121,27 @@ try {
   await page.getByRole("button", { name: "Refresh from platform" }).click();
   await page.getByRole("status").getByText(/No platform analytics provider is enabled/).waitFor();
   await page.getByLabel("Report period").getByText(/Last refreshed/).waitFor();
+  // Overlapping windows of one series (AIF 3): never added, in the API or on screen.
+  const tt = job.deliveries.find((d) => d.platform === "TikTok");
+  const session = (await (await fetch(`${API}/api/auth/session`, { method: "POST", headers: { Authorization: `Bearer ${TOKEN}` } })).json()).sessionToken;
+  const s0 = posted.getTime() + 3600_000;
+  for (const [a, b, v] of [[0, 6, 40], [3, 9, 50]]) {
+    const r = await fetch(`${API}/api/metrics/observations`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session}` }, body: JSON.stringify({
+      subjectType: "post", subjectId: tt.id, metric: "views", kind: "period", value: v, source: "manual", sourceDetail: "TikTok analytics, synthetic",
+      periodStart: new Date(s0 + a * 3600_000).toISOString(), periodEnd: new Date(s0 + b * 3600_000).toISOString() }) });
+    assert.equal(r.status, 201, await r.text());
+  }
+  await page.getByLabel("Include fixtures").check();
+  await page.getByLabel("Include fixtures").uncheck();
+  await totals.getByText(/unavailable: 1 post\(s\) have overlapping or conflicting readings/).waitFor();
+  await page.getByLabel("Per post and account").getByText(/not added: readings cover overlapping windows/).waitFor();
+  const from = await page.getByLabel("Report period").getByLabel("From", { exact: true }).inputValue();
+  const to = await page.getByLabel("Report period").getByLabel("To (inclusive)").inputValue();
+  const tz = await page.getByLabel("Report period").locator("input[list=m-tz]").inputValue();
+  const api = await (await fetch(`${API}/api/metrics/report?from=${from}&to=${to}&timezone=${encodeURIComponent(tz)}`, { headers: { Authorization: `Bearer ${session}` } })).json();
+  assert.equal(api.totals.manual.views.periodActivity, null, "API total is unavailable too");
+  assert.equal(api.totals.manual.views.conflicts, 1);
+
   await page.screenshot({ path: path.join(root, "docs/screenshots/pkg-g-measurement.png"), fullPage: false });
 
   // Campaign money: planned -> invoiced -> received.
@@ -158,7 +179,7 @@ try {
   const overflow = await mp.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   assert.ok(overflow <= 1, `no horizontal page scroll on a phone (${overflow}px)`);
 
-  console.log("Measurement e2e passed (report facts, manual reading with source, fixtures excluded, retract, provider refusal, campaign money states, dashboard, phone); screenshots written");
+  console.log("Measurement e2e passed (report facts, manual reading with source, fixtures excluded, retract, overlapping readings not added (UI = API), provider refusal, campaign money states, dashboard, phone); screenshots written");
   await browser.close();
 } catch (err) {
   console.error(err);
