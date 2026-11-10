@@ -157,6 +157,26 @@ export const characterImages = {
   approveRights: (imageId, recordId) => request(`/api/character-images/${imageId}/rights/approve`, { method: "POST", body: JSON.stringify({ recordId }) }),
 };
 
+// ─── Measurement (readings with provenance) ───────────────
+export const metrics = {
+  subjects: () => request("/api/metrics/subjects"),
+  providers: () => request("/api/metrics/providers"),
+  observations: (params = {}) => request(`/api/metrics/observations?${new URLSearchParams(params)}`),
+  record: (data) => request("/api/metrics/observations", { method: "POST", body: JSON.stringify(data) }),
+  retract: (id, reason) => request(`/api/metrics/observations/${id}/retract`, { method: "POST", body: JSON.stringify({ reason }) }),
+  report: (params) => request(`/api/metrics/report?${new URLSearchParams(params)}`),
+  refresh: () => request("/api/metrics/refresh", { method: "POST", body: "{}" }),
+};
+
+// ─── Campaign money: planned / invoiced / received ────────
+export const campaignMoney = {
+  get: (id) => request(`/api/campaigns/${id}/money`),
+  addInvoice: (id, data) => request(`/api/campaigns/${id}/invoices`, { method: "POST", body: JSON.stringify(data) }),
+  voidInvoice: (id, invoiceId, reason) => request(`/api/campaigns/${id}/invoices/${invoiceId}/void`, { method: "POST", body: JSON.stringify({ reason }) }),
+  addReceipt: (id, data) => request(`/api/campaigns/${id}/receipts`, { method: "POST", body: JSON.stringify(data) }),
+  reverseReceipt: (id, receiptId, reason) => request(`/api/campaigns/${id}/receipts/${receiptId}/reverse`, { method: "POST", body: JSON.stringify({ reason }) }),
+};
+
 // ─── Publishing (mock/simulated only until approved) ──────
 export const publishing = {
   policy: () => request("/api/publishing/policy"),

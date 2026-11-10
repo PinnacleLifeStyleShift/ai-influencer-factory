@@ -98,8 +98,8 @@ export function fakePrisma(seed = {}) {
   };
 }
 
-export async function startApp({ env = {}, prisma = fakePrisma(), gate, mediaStore, publishers, publishFaults, publishClock } = {}) {
-  const app = createApp({ prisma, env, gate, mediaStore, publishers, publishFaults, publishClock, logRequests: false });
+export async function startApp({ env = {}, prisma = fakePrisma(), gate, mediaStore, publishers, publishFaults, publishClock, metricsProviders } = {}) {
+  const app = createApp({ prisma, env, gate, mediaStore, publishers, publishFaults, publishClock, metricsProviders, logRequests: false });
   const server = await new Promise((resolve) => {
     const s = app.listen(0, "127.0.0.1", () => resolve(s));
   });

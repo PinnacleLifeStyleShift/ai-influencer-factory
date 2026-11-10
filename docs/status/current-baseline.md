@@ -1,6 +1,6 @@
 # Current baseline
 
-Recorded 2026-11-09. Updated for branch `pkg-f-publishing-interfaces` (stacked on `pkg-e-review-calendar-export` → `pkg-d-durable-jobs` → `pkg-c-content-packages` → `pkg-b-character-bible` → `pkg-a-identity-baseline` → PR #1).
+Recorded 2026-11-09. Updated for branch `pkg-g-measurement` (stacked on `pkg-f-publishing-interfaces` → `pkg-e-review-calendar-export` → `pkg-d-durable-jobs` → `pkg-c-content-packages` → `pkg-b-character-bible` → `pkg-a-identity-baseline` → PR #1).
 No secret values appear here; Railway variables are listed by name only.
 
 Evidence labels:
@@ -46,16 +46,17 @@ Evidence labels:
 | `20261110030000_content_packages` | Idea kinds, script versions, package fields; nullable trend score (fixture scores cleared), Package C | TESTED LOCALLY, HOSTED CI at `7e64744` |
 | `20261110040000_generation_jobs` | Jobs, steps, reconciliation records; pricing context on reservations (additive), Package D | TESTED LOCALLY, HOSTED CI at `0725bc8` |
 | `20261110050000_review_calendar_export` | Schedule instant/zone, calendar cancellation, `export_manifests` (additive), Package E | TESTED LOCALLY, HOSTED CI at `3504065` |
-| `20261110060000_publishing` | Cross-post destinations; publish jobs, deliveries, reconciliations (additive), publishing interfaces | TESTED LOCALLY |
+| `20261110060000_publishing` | Cross-post destinations; publish jobs, deliveries, reconciliations (additive), publishing interfaces | TESTED LOCALLY, HOSTED CI at `066731a` |
+| `20261110070000_measurement` | Metric readings, campaign invoices and receipts, campaign currency (additive), measurement | TESTED LOCALLY |
 
 Deploy path: `npm start` → `scripts/migrate-deploy.mjs`. It verifies a pre-migration database is identical to the baseline before recording it, and refuses otherwise. Rollback with Railway's button alone does not work after migration (the old image's `db push` refuses); this was re-tested at `10704fa`. See the deployment checklist doc.
 
 ## Tests at this branch (TESTED LOCALLY)
 
-- Backend `npm test`: 159/159 pass, 0 skipped.
+- Backend `npm test`: 168/168 pass, 0 skipped.
 - Frontend vitest: 10/10 pass.
 - `vite build` passes.
-- Playwright UI auth, character-bible, content-package, generation-jobs, review/export (desktop and 390 px phone) and publishing (simulation) checks: pass.
+- Playwright UI auth, character-bible, content-package, generation-jobs, review/export (desktop and 390 px phone), publishing (simulation) and measurement checks: pass.
 - `npm audit`: 0 vulnerabilities in both packages.
 - Both workflows run on this branch's PR; see its checks for HOSTED CI results at the exact head.
 
@@ -165,7 +166,20 @@ Not run here: Docker image builds (no Docker daemon in the sandbox; covered by t
 | Spending approval for paid posting | Not applicable yet: no paid path exists | ADR 0007 |
 | Real platform adapters | **Not met by design.** Owner decisions: accounts, official API access, scopes | ADR 0007 |
 | Automatic posting at the approved time | **Not built.** Manual owner action at/after the time; a worker would reuse `publishContent` | ADR 0007 |
-| Measurement (metrics sources, periods, campaign money states) | **Not started.** Next package | ADR 0007 |
+| Measurement (metrics sources, periods, campaign money states) | See the measurement matrix below | ADR 0008 |
+
+## Measurement (brief section 10, second half)
+
+| Requirement | Status | Evidence |
+| --- | --- | --- |
+| Separate fixture / manual / API-observed sources | Met (source on every reading; never added across sources; fixtures excluded unless asked; api only from a provider) | db-measurement; measurement e2e; mutation checks |
+| Separate cumulative counters from selected-period activity | Met (as-of totals, change between snapshots with times, activity only from readings fully inside the period) | db-measurement report test; mutation checks |
+| Reporting period, time zone, refresh date, missing coverage | Met (UTC window from local dates, DST-safe; refresh per source; posts without readings; coverage share and gaps; unfinished period flagged) | db-measurement; measurement e2e |
+| Never invent revenue attribution | Met (no revenue in metrics; dashboard "earned" removed; money only from receipts) | db-measurement; mutation check |
+| Campaign planned payout, invoice and cash received are separate | Met (three states; void/reverse with reasons; owner-only; campaigns with money records kept) | db-measurement money test; measurement e2e |
+| No automated DMs, likes, follower growth or deceptive persona claims | Met (none built) | — |
+| Platform analytics API | **Not met by design.** No provider; refresh refused until an account and official access are approved | ADR 0008 |
+| Legacy profile counters | Labelled self-reported; not migrated (no date or source) | ADR 0008 |
 
 ## Repository instructions
 

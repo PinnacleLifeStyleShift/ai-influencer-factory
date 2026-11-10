@@ -132,8 +132,11 @@ router.put("/:id", async (req, res) => {
       }
     }
     if (data.status === existing.status) delete data.status;
-    if (req.body.views !== undefined) data.views = parseInt(req.body.views) || 0;
-    if (req.body.likes !== undefined) data.likes = parseInt(req.body.likes) || 0;
+    // WHY: a bare counter has no source, time or period. Readings go through
+    // /api/metrics/observations, which records all three.
+    if (req.body.views !== undefined || req.body.likes !== undefined) {
+      throw new ApiError("METRICS_USE_READINGS", 409, "Record views and likes as metric readings (with source and time) under Measurement");
+    }
 
     const item = await req.prisma.content.update({
       where: { id: req.params.id },

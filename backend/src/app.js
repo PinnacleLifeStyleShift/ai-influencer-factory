@@ -29,6 +29,8 @@ import { createMediaStore } from "./services/mediaStore.js";
 import { createPublishingGate } from "./services/publishingGate.js";
 import { defaultPublishers } from "./services/publishers.js";
 import { publishingRoutes } from "./routes/publishing.js";
+import { metricsRoutes } from "./routes/metrics.js";
+import { defaultMetricsProviders } from "./services/metricsProviders.js";
 import { imageAdapters } from "./services/imageGeneration.js";
 import { videoAdapters } from "./services/videoGeneration.js";
 
@@ -36,7 +38,7 @@ import { videoAdapters } from "./services/videoGeneration.js";
  * Builds the Express app without listening, so it can be tested locally with
  * a fake Prisma client and no network access.
  */
-export function createApp({ prisma, env = process.env, gate, logRequests = true, sessions, authProvider, mediaStore, publishers, publishFaults, publishClock } = {}) {
+export function createApp({ prisma, env = process.env, gate, logRequests = true, sessions, authProvider, mediaStore, publishers, publishFaults, publishClock, metricsProviders } = {}) {
   const media = mediaStore || createMediaStore(env);
   // Publishing: real platforms are not implemented; the gate fails closed.
   const publishing = { gate: createPublishingGate({ env, publishers: publishers || defaultPublishers(env) }), faults: publishFaults || null, now: publishClock || (() => new Date()) };
@@ -133,6 +135,7 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
   api.use("/pipeline", packageRoutes);
   api.use("/pipeline", exportRoutes);
   api.use("/publishing", publishingRoutes());
+  api.use("/metrics", metricsRoutes({ providers: metricsProviders || defaultMetricsProviders(), env }));
   api.use("/pipeline", pipelineRoutes);
   api.use((_req, res) => sendError(res, new ApiError("NOT_FOUND", 404, "Not found")));
 

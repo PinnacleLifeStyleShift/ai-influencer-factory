@@ -38,3 +38,4 @@ is no longer used at build time, at startup, or in tests.
 | `20261110040000_generation_jobs` | Additive only: `generation_jobs`, `generation_steps`, `reconciliation_records`; `currency` (default `USD`), `price_version`, `cap_timezone` on `generation_reservations` |
 | `20261110050000_review_calendar_export` | Additive only: schedule instant/zone/wall time on `pipeline_items`; schedule and cancellation columns on `content`; `export_manifests` table |
 | `20261110060000_publishing` | Additive only: `cross_post_destinations` on `pipeline_items`; `publish_jobs`, `publish_deliveries`, `publish_reconciliations` |
+| `20261110070000_measurement` | Additive only: `currency` on `campaigns` (default `USD`); `metric_observations`, `campaign_invoices`, `campaign_receipts` |

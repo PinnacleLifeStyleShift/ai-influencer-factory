@@ -1,4 +1,5 @@
 import { validateBody, listLimit, SCHEMAS } from "../lib/validate.js";
+import { recordInvoice, voidInvoice, recordReceipt, reverseReceipt, campaignMoney } from "../services/campaignMoney.js";
 import { ApiError, sendError, routeError } from "../lib/errors.js";
 import { Router } from "express";
 const router = Router();
@@ -98,12 +99,31 @@ router.put("/:id", async (req, res) => {
 // DELETE /api/campaigns/:id
 router.delete("/:id", async (req, res) => {
   try {
+    // Invoices and receipts are financial records: a campaign that has them is kept.
+    const records = await req.prisma.campaignInvoice.count({ where: { campaignId: req.params.id } }) + await req.prisma.campaignReceipt.count({ where: { campaignId: req.params.id } });
+    if (records) throw new ApiError("CAMPAIGN_HAS_MONEY_RECORDS", 409, "This campaign has invoices or receipts; close it instead of deleting it");
     await req.prisma.campaign.delete({ where: { id: req.params.id } });
     res.json({ success: true });
   } catch (err) {
     return routeError(res, err, "Failed to delete campaign", "DELETE /campaigns/:id");
   }
 });
+
+// ─── Money: planned / invoiced / received (separate states) ──
+const by = (req) => req.principal?.role || "unknown";
+const plainMoney = (r) => ({ ...r, amountMicros: Number(r.amountMicros) });
+const moneyRoute = (label, fn) => async (req, res) => {
+  try { await fn(req, res); } catch (err) { return routeError(res, err, `Failed: ${label}`, label); }
+};
+router.get("/:id/money", moneyRoute("GET /campaigns/:id/money", async (req, res) => res.json(await campaignMoney(req.prisma, req.params.id))));
+router.post("/:id/invoices", moneyRoute("POST /campaigns/:id/invoices", async (req, res) =>
+  res.status(201).json(plainMoney(await recordInvoice(req.prisma, req.params.id, req.body, { by: by(req) })))));
+router.post("/:id/invoices/:invoiceId/void", moneyRoute("POST /campaigns/:id/invoices/:invoiceId/void", async (req, res) =>
+  res.json(plainMoney(await voidInvoice(req.prisma, req.params.id, req.params.invoiceId, req.body?.reason, { by: by(req) })))));
+router.post("/:id/receipts", moneyRoute("POST /campaigns/:id/receipts", async (req, res) =>
+  res.status(201).json(plainMoney(await recordReceipt(req.prisma, req.params.id, req.body, { by: by(req) })))));
+router.post("/:id/receipts/:receiptId/reverse", moneyRoute("POST /campaigns/:id/receipts/:receiptId/reverse", async (req, res) =>
+  res.json(plainMoney(await reverseReceipt(req.prisma, req.params.id, req.params.receiptId, req.body?.reason, { by: by(req) })))));
 
 // POST /api/campaigns/:id/submissions — submit character to campaign
 router.post("/:id/submissions", async (req, res) => {
