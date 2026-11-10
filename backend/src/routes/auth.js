@@ -1,4 +1,5 @@
-import { Router } from "express";
+import { secureRouter } from "../lib/secureRouter.js";
+import { onlyFields } from "../lib/requests.js";
 import { ApiError, sendError } from "../lib/errors.js";
 import { sessionTtlMs } from "../auth/sessions.js";
 
@@ -25,15 +26,15 @@ export function createSessionHandler({ env, provider, sessions }) {
 
 /** Routes that need an existing session. */
 export function authRoutes({ sessions }) {
-  const router = Router();
-  router.get("/me", (req, res) => res.json({ principal: req.principal }));
-  router.post("/logout", async (req, res, next) => {
+  const router = secureRouter();
+  router.get("/me", [], (req, res) => res.json({ principal: req.principal }));
+  router.post("/logout", [], async (req, res, next) => {
     try {
       await sessions.revoke(req.principal.sessionId);
       res.json({ success: true });
     } catch (err) { next(err); }
   });
-  router.post("/sessions/revoke-all", async (req, res, next) => {
+  router.post("/sessions/revoke-all", ["admin"], onlyFields([]), async (req, res, next) => {
     try {
       const revoked = await sessions.revokeAll(req.principal.id);
       res.json({ success: true, revoked });

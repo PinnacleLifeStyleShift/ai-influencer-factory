@@ -1,41 +1,40 @@
+import { ApiError, sendError } from "../lib/errors.js";
+
 /**
- * Server-side authorization.
+ * Server-side authorization, declared on each route registration.
  *
- * WHY a central rule table instead of per-route checks: a new route cannot be
- * added without matching a rule, and the catch-all rules deny by default
- * (anything not a GET needs "edit"). Spending is its own permission: editorial
- * rights alone never allow a paid provider call.
+ * WHY route-bound (Package 1 of the 10 Nov spec): the earlier URL-pattern
+ * table was case-sensitive and anchored, while Express routes are matched
+ * case-insensitively and ignore a trailing slash. "/generate-image/" or
+ * "/GENERATE-IMAGE" missed the "generate + spend" rule, fell through to plain
+ * "edit" and still reached the handler. Now the permission is part of the
+ * route itself (secureRouter), so every way of reaching a handler carries
+ * the same declaration, and a mutation without one cannot be registered.
+ * Spending is its own permission: editorial rights never allow a paid call.
  */
 export const ROLE_PERMISSIONS = Object.freeze({
-  owner: ["read", "edit", "approve", "schedule", "references", "generate", "spend", "admin"],
-  editor: ["read", "edit", "schedule", "references", "generate"],
+  owner: ["read", "edit", "approve", "schedule", "export", "publish", "references", "generate", "spend", "admin"],
+  editor: ["read", "edit", "schedule", "export", "references", "generate"],
   reviewer: ["read", "approve"],
 });
-
-// Ordered: first match wins. Paths are relative to /api.
-const RULES = [
-  { method: "POST", path: /^\/auth\/logout$/, needs: [] },
-  { method: "GET", path: /^\/auth\/me$/, needs: [] },
-  { method: "POST", path: /^\/auth\/sessions\/revoke-all$/, needs: ["admin"] },
-  { method: "POST", path: /^\/characters\/[^/]+\/generate-(image|video)$/, needs: ["generate", "spend"] },
-  { method: "POST", path: /^\/pipeline\/generate-content$/, needs: ["generate", "spend"] },
-  { method: "POST", path: /^\/characters\/[^/]+\/reference-image$/, needs: ["references"] },
-  { method: "POST", path: /^\/pipeline\/[^/]+\/(approve|reject)$/, needs: ["approve"] },
-  { method: "POST", path: /^\/pipeline\/[^/]+\/schedule$/, needs: ["schedule"] },
-  { method: "GET", path: /^\/system\//, needs: ["admin"] },
-  { method: "GET", path: /^\/audit-events/, needs: ["admin"] },
-  { method: "GET", path: /.*/, needs: ["read"] },
-  { method: "*", path: /.*/, needs: ["edit"] },
-];
-
-export function requiredPermissions(method, path) {
-  for (const r of RULES) {
-    if ((r.method === "*" || r.method === method) && r.path.test(path)) return r.needs;
-  }
-  return ["admin"]; // unreachable with the catch-all; fails closed if it is removed
-}
+export const PERMISSIONS = Object.freeze(new Set(Object.values(ROLE_PERMISSIONS).flat()));
 
 export function missingPermissions(role, needs) {
   const has = new Set(ROLE_PERMISSIONS[role] || []);
   return needs.filter((p) => !has.has(p));
+}
+
+export const PERMISSION_DECLARATION = Symbol("permissionDeclaration");
+
+/** Route middleware enforcing a declared permission set ([] = any signed-in session). */
+export function allow(needs) {
+  if (!Array.isArray(needs)) throw new Error("allow() needs an array of permissions");
+  for (const p of needs) if (!PERMISSIONS.has(p)) throw new Error(`Unknown permission "${p}"`);
+  const mw = (req, res, next) => {
+    const missing = missingPermissions(req.principal?.role, needs);
+    if (missing.length) return sendError(res, new ApiError("FORBIDDEN", 403, "You do not have permission for this action", { missing }));
+    return next();
+  };
+  mw[PERMISSION_DECLARATION] = Object.freeze([...needs]);
+  return mw;
 }

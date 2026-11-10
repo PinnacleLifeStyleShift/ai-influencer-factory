@@ -1,4 +1,6 @@
+import { localOf } from "../src/lib/zonedTime.js";
 import { createPrismaClient } from "../src/lib/prisma.js";
+import { publishVersion } from "../src/services/characterVersions.js";
 
 /**
  * Integration tests run only against the disposable database created by
@@ -27,7 +29,7 @@ export function newClient() {
 }
 
 const TABLES = [
-  "audit_events", "sessions", "generation_reservations", "generation_applications", "character_images", "campaign_submissions", "campaigns", "pipeline_items",
+  "metric_observations", "campaign_receipts", "campaign_invoices", "system_controls", "asset_versions", "publish_reconciliations", "publish_deliveries", "publish_jobs", "export_manifests", "reconciliation_records", "generation_steps", "generation_jobs", "script_versions", "rights_records", "character_versions", "audit_events", "sessions", "generation_reservations", "generation_applications", "character_images", "campaign_submissions", "campaigns", "pipeline_items",
   "scripts", "trends", "content", "characters",
 ];
 
@@ -44,16 +46,29 @@ export async function makeCharacter(prisma, overrides = {}) {
 }
 
 /** A pipeline item ready for review (synthetic URLs on example.test). */
+/** A whole hour about 30 days ahead, as 9-ish local time in Los Angeles. */
+export function futureSchedule(days = 30, zone = "America/Los_Angeles") {
+  const at = new Date(Math.ceil((Date.now() + days * 86400_000) / 3600_000) * 3600_000);
+  const local = localOf(at.getTime(), zone);
+  return { scheduledAt: at, scheduleTimezone: zone, scheduleLocal: local, scheduledDate: local.slice(0, 10) };
+}
+
 export async function makeReviewItem(prisma, overrides = {}) {
   const character = await makeCharacter(prisma);
+  // Pinned to a published version, like every item created by generate-script.
+  const version = await publishVersion(prisma, character.id, { by: "test" });
   return prisma.pipelineItem.create({
     data: {
       stage: "review",
       characterId: character.id,
+      characterVersionId: version.version.id,
+      disclosure: "This is a fictional, AI-generated character.",
       imageUrl: "https://example.test/still.png",
       caption: "Synthetic caption",
       hashtags: "#synthetic",
       platform: "Instagram",
+      // Destination schedule, part of the approved snapshot (Package E).
+      ...futureSchedule(),
       ...overrides,
     },
   });

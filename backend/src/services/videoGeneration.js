@@ -17,7 +17,7 @@ import { ProviderError } from "./generationGate.js";
 
 const FAL_ENDPOINT = "fal-ai/kling-video/v2.1/standard/image-to-video";
 
-async function generateWithFal(imageUrl, prompt, options = {}) {
+async function generateWithFal(imageUrl, prompt, options = {}, ctx = {}) {
   const falKey = process.env.FAL_KEY;
   if (!falKey) throw new ProviderError("FAL_KEY not configured", { submitted: false });
 
@@ -48,6 +48,8 @@ async function generateWithFal(imageUrl, prompt, options = {}) {
   const job = await submitRes.json();
   const requestId = job.request_id;
   if (!requestId) throw new Error("fal.ai did not return a request_id");
+  // Accepted: record the provider's id so an interrupted job can be reconciled.
+  await ctx.onAccepted?.(requestId);
 
   console.log("fal.ai job submitted:", requestId);
 
@@ -136,7 +138,7 @@ function getKlingAuth() {
   return createJwt(accessKey, secretKey);
 }
 
-async function generateWithKling(imageUrl, prompt, options = {}) {
+async function generateWithKling(imageUrl, prompt, options = {}, ctx = {}) {
   const token = getKlingAuth();
 
   const body = {
@@ -165,6 +167,7 @@ async function generateWithKling(imageUrl, prompt, options = {}) {
   const data = await res.json();
   const taskId = data?.data?.task_id;
   if (!taskId) throw new Error("Kling did not return a task_id");
+  await ctx.onAccepted?.(taskId);
 
   console.log("Kling taskId:", taskId);
   return await pollKlingTask(taskId, token);
@@ -246,15 +249,17 @@ async function klingTextToVideo(prompt, options = {}) {
 /** Keyed by "provider:model". Presence here does not mean approved. */
 export const videoAdapters = {
   "fal:kling-v2.1-i2v": {
-    generate: async ({ imageUrl, prompt, options }) => {
+    capabilities: { referenceConditioning: false, sourceImage: true },
+    generate: async ({ imageUrl, prompt, options }, ctx) => {
       if (!imageUrl) throw new ProviderError("fal:kling-v2.1-i2v requires a source image", { submitted: false });
-      return { videoUrl: await generateWithFal(imageUrl, prompt, options) };
+      return { videoUrl: await generateWithFal(imageUrl, prompt, options, ctx) };
     },
   },
   "kling:kling-v2-1": {
-    generate: async ({ imageUrl, prompt, options }) =>
+    capabilities: { referenceConditioning: false, sourceImage: true },
+    generate: async ({ imageUrl, prompt, options }, ctx) =>
       imageUrl
-        ? { videoUrl: await generateWithKling(imageUrl, prompt, options) }
+        ? { videoUrl: await generateWithKling(imageUrl, prompt, options, ctx) }
         : klingTextToVideo(prompt, options),
   },
 };

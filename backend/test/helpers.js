@@ -76,18 +76,32 @@ export function fakePrisma(seed = {}) {
       return { count };
     },
   };
+  // Minimal job journal stand-ins (unit tests only; real behaviour is tested on Postgres).
+  const jobs = new Map(); const steps = [];
+  const generationJob = {
+    create: async ({ data }) => { const id = `job-${jobs.size + 1}`; const row = { id, ...data, steps: undefined }; jobs.set(id, row);
+      (data.steps?.create || []).forEach((st) => steps.push({ id: `step-${steps.length + 1}`, jobId: id, state: "pending", ...st })); return row; },
+    updateMany: async ({ where, data }) => { const j = jobs.get(where.id); if (!j) return { count: 0 }; Object.assign(j, data); return { count: 1 }; },
+  };
+  const generationStep = {
+    updateMany: async ({ where, data }) => { const st = steps.find((x) => x.jobId === where.jobId && x.index === where.index); if (!st) return { count: 0 }; Object.assign(st, data); return { count: 1 }; },
+    findMany: async ({ where }) => steps.filter((x) => x.jobId === where.jobId),
+    findFirst: async ({ where }) => steps.find((x) => x.jobId === where.jobId && x.index === where.index) || null,
+  };
   const auditRows = [];
   const auditEvent = { create: async ({ data }) => { auditRows.push(data); return data; } };
+  // Runtime switches (generation pause): none set in the fake database.
+  const systemControl = { findUnique: async () => null, upsert: async ({ create }) => create };
   return {
-    db, calls, session, sessionRows: sessions, auditEvent, auditRows,
+    db, calls, session, sessionRows: sessions, auditEvent, auditRows, generationJob, generationStep, systemControl,
     character: model("character"),
     content: model("content"),
     pipelineItem: model("pipelineItem"),
   };
 }
 
-export async function startApp({ env = {}, prisma = fakePrisma(), gate } = {}) {
-  const app = createApp({ prisma, env, gate, logRequests: false });
+export async function startApp({ env = {}, prisma = fakePrisma(), gate, mediaStore, publishers, publishFaults, publishClock, metricsProviders, assembly } = {}) {
+  const app = createApp({ prisma, env, gate, mediaStore, publishers, publishFaults, publishClock, metricsProviders, assembly, logRequests: false });
   const server = await new Promise((resolve) => {
     const s = app.listen(0, "127.0.0.1", () => resolve(s));
   });
