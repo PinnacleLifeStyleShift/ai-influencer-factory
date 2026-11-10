@@ -24,7 +24,7 @@ const GATE_ENV = {
   PROVIDER_PRICES_USD: JSON.stringify({ "mock:image": "1.00", "mock:video": "1.00" }),
   SPEND_CAP_PER_JOB_USD: "5", SPEND_CAP_DAILY_USD: "100", SPEND_CAP_MONTHLY_USD: "100", PRICE_CURRENCY: "USD", PRICE_VERSION: "test-fixture-v1", SPEND_CAP_TIMEZONE: "UTC",
 };
-function mockGate({ conditioning = false, sourceImage = true } = {}) {
+function mockGate({ conditioning = false, sourceImage = true, faults = null } = {}) {
   const inputs = { image: [], video: [] };
   const adapters = {
     image: { "mock:image": {
@@ -36,7 +36,7 @@ function mockGate({ conditioning = false, sourceImage = true } = {}) {
       generate: async (input) => { inputs.video.push(input); return { videoUrl: `https://example.test/v-${inputs.video.length}.mp4` }; },
     } },
   };
-  return { gate: createGenerationGate({ env: GATE_ENV, ledger: createPrismaLedger(prisma), adapters, log: { error() {} } }), inputs };
+  return { gate: createGenerationGate({ env: GATE_ENV, ledger: createPrismaLedger(prisma), adapters, log: { error() {} }, faults }), inputs };
 }
 
 async function withApp(fn, { gate } = {}) {
@@ -273,3 +273,81 @@ test("content generates from its pinned (older) version, and approval is bound t
     assert.equal(sched.body.code, "APPROVAL_STALE");
   }, { gate: m.gate });
 });
+
+// ─── Rights revocation (owner's project prompt, AC-IF03-01/02) ──
+
+test("revocation: owner-only, recorded as a new record, blocks new use and holds affected unpublished items", opts, async () => {
+  const m = mockGate({ conditioning: true });
+  await withApp(async (app) => {
+    const c = await createCharacter(app, { reference_image_url: "https://example.test/ref-rev.png" });
+    const img = (await call(app, `/api/characters/${c.id}/images`)).body.images[0];
+    await clearImage(app, img.id);
+    const v = (await call(app, `/api/characters/${c.id}/versions`, { method: "POST" })).body.version;
+    assert.ok(v.references.some((r) => r.imageId === img.id), "the version pins the reference");
+    const pinned = await scriptItem(app, c.id); // pins the published version
+    const gen = await call(app, "/api/pipeline/generate-content", { method: "POST", body: { pipelineItemId: pinned.id, referenceMode: "required" } });
+    assert.equal(gen.status, 200, JSON.stringify(gen.body));
+    const published = await prisma.pipelineItem.create({ data: { stage: "published", characterId: c.id, characterVersionId: v.id, platform: "Instagram" } });
+    const other = await prisma.pipelineItem.create({ data: { stage: "review", characterId: (await createCharacter(app)).id } });
+    const provenanceBefore = await prisma.generationApplication.findMany();
+
+    const editor = (await createSessionStore(prisma).create({ id: "synthetic-editor", role: "editor", workspaceId: "default" }, { provider: "test", ttlMs: 3600_000 })).token;
+    assert.equal((await app.raw(`/api/character-images/${img.id}/rights/revoke`, { method: "POST", token: editor, body: { reason: "Holder withdrew consent" } })).status, 403);
+    assert.equal((await call(app, `/api/character-images/${img.id}/rights/revoke`, { method: "POST", body: {} })).status, 400, "reason required");
+    const rev = await call(app, `/api/character-images/${img.id}/rights/revoke`, { method: "POST", body: { reason: "Holder withdrew consent" } });
+    assert.equal(rev.status, 200, JSON.stringify(rev.body));
+    assert.equal(rev.body.held, 1);
+    assert.equal((await call(app, `/api/character-images/${img.id}/rights/revoke`, { method: "POST", body: { reason: "again please" } })).body.code, "ALREADY_REVOKED");
+
+    // History intact: the earlier approved record is unchanged; the revocation is newest.
+    const records = await prisma.rightsRecord.findMany({ where: { imageId: img.id }, orderBy: { recordedAt: "asc" } });
+    assert.equal(records.length, 2);
+    assert.ok(records[0].approvedAt && !records[0].revokedAt);
+    assert.deepEqual([records[1].permittedUses, Boolean(records[1].revokedAt)], [[], true]);
+
+    // Holds: the affected unpublished item only; provenance is not rewritten.
+    const after = Object.fromEntries((await prisma.pipelineItem.findMany()).map((i) => [i.id, i.rightsHoldAt]));
+    assert.ok(after[pinned.id], "affected item held");
+    assert.equal(after[published.id], null, "published record untouched");
+    assert.equal(after[other.id], null, "unrelated item untouched");
+    assert.deepEqual(await prisma.generationApplication.findMany(), provenanceBefore);
+
+    // New use is blocked before any reservation.
+    const blocked = await call(app, "/api/pipeline/generate-content", { method: "POST", body: { pipelineItemId: pinned.id, referenceMode: "required", confirmReplaceApproved: true } });
+    assert.equal(blocked.body.code, "REFERENCE_NOT_CLEARED");
+    assert.match(blocked.body.details.blocked[0].missing.join(" "), /revoked/);
+
+    // The hold stops approval until the owner clears it with a note.
+    await prisma.pipelineItem.update({ where: { id: pinned.id }, data: { stage: "review", disclosure: "This is a fictional, AI-generated character.", platform: "Instagram" } });
+    const it = (await call(app, `/api/pipeline/${pinned.id}`)).body;
+    assert.equal((await call(app, `/api/pipeline/${pinned.id}/approve`, { method: "POST", body: { revision: it.revision, snapshotHash: it.snapshotHash } })).body.code, "RIGHTS_REVIEW_REQUIRED");
+    assert.equal((await app.raw(`/api/pipeline/${pinned.id}/rights-hold/clear`, { method: "POST", token: editor, body: { note: "reviewed" } })).status, 403);
+    const cleared = await call(app, `/api/pipeline/${pinned.id}/rights-hold/clear`, { method: "POST", body: { note: "Will regenerate without the revoked reference" } });
+    assert.equal(cleared.status, 200);
+    assert.equal(cleared.body.pipelineItem.rightsHoldAt, null);
+  }, { gate: m.gate });
+});
+
+test("rights revoked between the request and submission: nothing is sent and the money is released", opts, async () => {
+  let imageId; let app;
+  const m = mockGate({
+    conditioning: true,
+    // Runs after the reservation, before the pre-submit check.
+    faults: async (point) => { if (point === "afterReserve" && imageId) await call(app, `/api/character-images/${imageId}/rights/revoke`, { method: "POST", body: { reason: "Revoked mid-request" } }); },
+  });
+  await withApp(async (a) => {
+    app = a;
+    const c = await createCharacter(app, { reference_image_url: "https://example.test/ref-late.png" });
+    const img = (await call(app, `/api/characters/${c.id}/images`)).body.images[0];
+    await clearImage(app, img.id);
+    await call(app, `/api/characters/${c.id}/versions`, { method: "POST" });
+    const item = await scriptItem(app, c.id);
+    imageId = img.id;
+    const r = await call(app, "/api/pipeline/generate-content", { method: "POST", body: { pipelineItemId: item.id, referenceMode: "required" } });
+    assert.equal(r.body.code, "REFERENCE_NOT_CLEARED", JSON.stringify(r.body));
+    assert.equal(m.inputs.image.length, 0, "the provider never received the reference");
+    const res = await prisma.generationReservation.findMany();
+    assert.ok(res.length >= 1 && res.every((x) => x.state === "released"), "reserved money released");
+  }, { gate: m.gate });
+});
+

@@ -241,6 +241,8 @@ export function createGenerationGate({ env = process.env, ledger, adapters, log 
           if (isProcessDeath(err)) throw err;
           await ledger.release(r.reservationId);
           await releaseUnstartedAfter(i);
+          // A deliberate refusal (e.g. rights revoked meanwhile) keeps its own reason.
+          if (err?.preSubmitRefusal) throw err;
           throw new ApiError("PROVIDER_UNAVAILABLE", 503, "Could not record the request before sending it; nothing was sent");
         }
         const capabilities = check.adapter.capabilities || {};

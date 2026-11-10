@@ -46,6 +46,9 @@ jobs:
       - run: npm ci                    # postinstall runs prisma generate
       - name: PostgreSQL server binaries
         run: ls -d /usr/lib/postgresql/*/bin && /usr/lib/postgresql/*/bin/postgres --version
+      # Local media assembly tests run real ffmpeg (they skip, with the reason, without it).
+      - name: ffmpeg for media assembly tests
+        run: (command -v ffmpeg || (sudo apt-get update -q && sudo apt-get install -y -q ffmpeg)) && ffmpeg -version | head -1
       - name: Tests (disposable Postgres, migrations + drift check)
         run: npm test
       - name: Dependency audit

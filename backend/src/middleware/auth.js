@@ -1,6 +1,5 @@
 import { ApiError, sendError } from "../lib/errors.js";
 import { MIN_TOKEN_LENGTH, ownerTokenConfigured, secretsEqual } from "../auth/providers.js";
-import { requiredPermissions, missingPermissions } from "../auth/permissions.js";
 
 export { MIN_TOKEN_LENGTH };
 
@@ -52,17 +51,5 @@ export function requireSession({ env, sessions }) {
     } catch (err) {
       return next(err);
     }
-  };
-}
-
-/** Checks the principal's role against the route rule table. */
-export function authorize() {
-  return (req, res, next) => {
-    const needs = requiredPermissions(req.method, req.path);
-    const missing = missingPermissions(req.principal?.role, needs);
-    if (missing.length) {
-      return sendError(res, new ApiError("FORBIDDEN", 403, "You do not have permission for this action", { missing }));
-    }
-    return next();
   };
 }

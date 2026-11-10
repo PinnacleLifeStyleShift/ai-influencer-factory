@@ -1,6 +1,6 @@
 # Current baseline
 
-Recorded 2026-11-09. Updated for branch `pkg-d-durable-jobs` (stacked on `pkg-c-content-packages` → `pkg-b-character-bible` → `pkg-a-identity-baseline` → PR #1).
+Recorded 2026-11-09. Updated for branch `pkg-h-operational-hardening` (stacked on `pkg-g-measurement` → `pkg-f-publishing-interfaces` → `pkg-e-review-calendar-export` → `pkg-d-durable-jobs` → `pkg-c-content-packages` → `pkg-b-character-bible` → `pkg-a-identity-baseline` → PR #1).
 No secret values appear here; Railway variables are listed by name only.
 
 Evidence labels:
@@ -44,16 +44,20 @@ Evidence labels:
 | `20261110010000_audit_events` | `audit_events` table (additive) | TESTED LOCALLY, HOSTED CI at `8ce8ace` |
 | `20261110020000_character_versions_rights` | Versions, rights, pins, recorded inputs (additive), Package B | TESTED LOCALLY, HOSTED CI at `1cfcf9d` |
 | `20261110030000_content_packages` | Idea kinds, script versions, package fields; nullable trend score (fixture scores cleared), Package C | TESTED LOCALLY, HOSTED CI at `7e64744` |
-| `20261110040000_generation_jobs` | Jobs, steps, reconciliation records; pricing context on reservations (additive), Package D | TESTED LOCALLY |
+| `20261110040000_generation_jobs` | Jobs, steps, reconciliation records; pricing context on reservations (additive), Package D | TESTED LOCALLY, HOSTED CI at `0725bc8` |
+| `20261110050000_review_calendar_export` | Schedule instant/zone, calendar cancellation, `export_manifests` (additive), Package E | TESTED LOCALLY, HOSTED CI at `3504065` |
+| `20261110060000_publishing` | Cross-post destinations; publish jobs, deliveries, reconciliations (additive), publishing interfaces | TESTED LOCALLY, HOSTED CI at `066731a` |
+| `20261110070000_measurement` | Metric readings, campaign invoices and receipts, campaign currency (additive), measurement | TESTED LOCALLY, HOSTED CI at `2e2ed62` |
+| `20261110080000_sponsor_authorization` | Sponsor authorization fields on campaigns (additive), operational hardening | TESTED LOCALLY |
 
 Deploy path: `npm start` → `scripts/migrate-deploy.mjs`. It verifies a pre-migration database is identical to the baseline before recording it, and refuses otherwise. Rollback with Railway's button alone does not work after migration (the old image's `db push` refuses); this was re-tested at `10704fa`. See the deployment checklist doc.
 
 ## Tests at this branch (TESTED LOCALLY)
 
-- Backend `npm test`: 127/127 pass, 0 skipped.
-- Frontend vitest: 10/10 pass.
+- Backend `npm test`: 175/175 pass, 0 skipped (includes a real `pg_dump` → `pg_restore` drill).
+- Frontend vitest: 13/13 pass.
 - `vite build` passes.
-- Playwright UI auth, character-bible, content-package and generation-jobs checks: pass.
+- Playwright UI auth, character-bible, content-package, generation-jobs, review/export (desktop and 390 px phone), publishing (simulation), measurement and production-build (security headers, no CSP violations) checks: pass.
 - `npm audit`: 0 vulnerabilities in both packages.
 - Both workflows run on this branch's PR; see its checks for HOSTED CI results at the exact head.
 
@@ -129,6 +133,67 @@ Not run here: Docker image builds (no Docker daemon in the sandbox; covered by t
 | Old job replay after a newer approval; approved/scheduled items not silently regenerated | Met (`APPROVED_CONTENT` needs explicit confirmation; scheduled items refused; stale results superseded) | db-routes, db-packages, db-generation-races |
 | Recovery uses the durable ledger even if the app restarts with the default gate | Met (bug found by the e2e and fixed) | db-jobs regression test |
 | Provider status lookups for real adapters | **Not met.** No approved adapter has a verified lookup endpoint; operators resolve with evidence | ADR 0005 |
+
+## Package E exit criteria
+
+| Criterion (brief section 9) | Status | Evidence |
+| --- | --- | --- |
+| Snapshot hash covers every publish-relevant field, including scheduled instant and time zone | Met (version-bound: changing the time clears approval) | db-review-export "part of the approved snapshot"; mutation check |
+| IANA zone + UTC instant stored; destination vs viewer time distinguished | Met (zone, wall time and instant stored; review shows destination, UTC and viewer time) | review-export e2e (London viewer, LA destination) |
+| Ambiguous and nonexistent DST times | Met (explicit choice / refusal; canonical IANA names only) | zoned-time tests (LA, London, Lord Howe); db-review-export; e2e |
+| Scheduling is a plan, never delivery evidence | Met (labels at API and UI; publishing still refused) | db-routes; e2e |
+| Transitions enforced on the server | Met (schedule, cancel, export, delete and calendar edits all checked server-side) | db-review-export; db-routes |
+| Cancellation fences downstream jobs | Met (entry cancelled + item re-versioned in one transaction; `assertDeliverable` fence) | db-review-export cancellation test; mutation check |
+| Export only the approved immutable version, with provenance, rights and known cost; secrets, prompts and reference images excluded | Met (allow-list manifest, JSON + readable) | db-review-export export, provenance tests |
+| MIME, dimensions, playback, checksums validated; broken media prevents a success badge | Met for container-level checks (not a full decode) | db-review-export invalid-media test; e2e checksum of download |
+| Repeated export yields the same manifest | Met (canonical, no export time; same hash, single record) | db-review-export; mutation check |
+| A stale approval cannot export as current | Met (three guards; old exports marked superseded) | db-review-export; mutation check |
+| Export never posts or contacts anyone | Met (download only) | ADR 0006 |
+| Mobile/desktop review accessible; keyboard and error flows | Met for the review panel (responsive shell, labelled controls, alerts, keyboard cancel) | review-export e2e; screenshots |
+| Export with real media | **Not met.** Needs approved private media storage; default store is disabled (`MEDIA_STORE_NOT_CONFIGURED`) | ADR 0006 |
+| Media bundled into one download | **Not met.** Manifest lists URLs + checksums; bundling needs storage | ADR 0006 |
+
+## Publishing interfaces (brief section 10, first half)
+
+| Requirement | Status | Evidence |
+| --- | --- | --- |
+| Interfaces and mock tests now; live publisher disabled | Met: adapter contract + gate; no real adapter; every platform "not implemented" by default | db-publishing gate tests; ADR 0007 |
+| Activation needs approved account, verified official API eligibility, scopes, content/destination approval | Met as gate conditions (`LIVE_PUBLISHING`, `APPROVED_PUBLISH_DESTINATIONS`, `PUBLISH_ACCOUNTS` with scopes, eligibility date, approval reference) plus approved snapshot, due time, verified export | db-publishing; mutation checks |
+| Destination-specific delivery, remote post id, permalink | Met (one delivery row per destination) | db-publishing cross-post test |
+| Uncertain outcomes and reconciliation | Met (unknown blocks re-posting; platform check; owner resolution with evidence; recovery after process death at three points) | db-publishing; mutation checks |
+| One cross-platform job is not several originals | Met (one job per calendar entry; destinations are deliveries) | db-publishing; publishing e2e |
+| Partial success never retries successful destinations | Met | db-publishing partial-success test; mutation check |
+| Simulation never claims a post | Met (state `simulated`, content stays scheduled) | db-publishing; publishing e2e |
+| Spending approval for paid posting | Not applicable yet: no paid path exists | ADR 0007 |
+| Real platform adapters | **Not met by design.** Owner decisions: accounts, official API access, scopes | ADR 0007 |
+| Automatic posting at the approved time | **Not built.** Manual owner action at/after the time; a worker would reuse `publishContent` | ADR 0007 |
+| Measurement (metrics sources, periods, campaign money states) | See the measurement matrix below | ADR 0008 |
+
+## Measurement (brief section 10, second half)
+
+| Requirement | Status | Evidence |
+| --- | --- | --- |
+| Separate fixture / manual / API-observed sources | Met (source on every reading; never added across sources; fixtures excluded unless asked; api only from a provider) | db-measurement; measurement e2e; mutation checks |
+| Separate cumulative counters from selected-period activity | Met (as-of totals, change between snapshots with times, activity only from readings fully inside the period) | db-measurement report test; mutation checks |
+| Reporting period, time zone, refresh date, missing coverage | Met (UTC window from local dates, DST-safe; refresh per source; posts without readings; coverage share and gaps; unfinished period flagged) | db-measurement; measurement e2e |
+| Never invent revenue attribution | Met (no revenue in metrics; dashboard "earned" removed; money only from receipts) | db-measurement; mutation check |
+| Campaign planned payout, invoice and cash received are separate | Met (three states; void/reverse with reasons; owner-only; campaigns with money records kept) | db-measurement money test; measurement e2e |
+| No automated DMs, likes, follower growth or deceptive persona claims | Met (none built) | — |
+| Platform analytics API | **Not met by design.** No provider; refresh refused until an account and official access are approved | ADR 0008 |
+| Legacy profile counters | Labelled self-reported; not migrated (no date or source) | ADR 0008 |
+
+## Operational hardening (brief section 11)
+
+| Item | Status | Evidence |
+| --- | --- | --- |
+| Railway builders, variables by name, auto-deploy, target database | Builders verified (Dockerfile, both services); variables listed by name; preflight reports the database fingerprint and migration state read-only | Deployment section above; `scripts/preflight.mjs`; db-ops |
+| Staged migration, backup/restore | Backup script plus a restore drill that refuses production and non-empty targets and checks row counts and migrations; tested for real against PostgreSQL 16 | db-ops; runbook sections 1 and 3 |
+| Frontend/API revisions and rollback plan | Revisions in the completion report; rollback by revert (never back past `277d2d3` without a restore) | Runbook section 2 |
+| Readiness and graceful shutdown | `/ready` (database + all migrations), Railway health check on it, 25 s drain within `drainingSeconds = 30` | db-ops; Docker smoke in CI |
+| Configuration audit by name only | Startup `[config]` lines and `/api/system/config-check` (admin); never values | db-ops; mutation checks |
+| Non-root images, security headers | Both images run as `node`; CSP and related headers, checked against the real production build | production-build e2e; Docker smoke in CI |
+| Sponsor relationship (brief section 3) | Submissions need a recorded agreement and a paid-promotion disclosure | db-ops |
+| External monitoring, scheduled backups, multi-instance rate limits | **Not done.** Owner decisions (service, cost, storage) | ADR 0009 |
 
 ## Repository instructions
 
