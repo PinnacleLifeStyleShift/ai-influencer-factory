@@ -122,3 +122,28 @@ describe("idempotency keys", () => {
     for (const k of keys) expect(k).toMatch(/^[A-Za-z0-9._:-]{8,128}$/);
   });
 });
+
+describe("refusals name what is missing (spec 11 Nov, IF01 role-specific controls)", () => {
+  it("a 403 says which permission the role lacks; other errors keep the server message", async () => {
+    const fetchImpl = vi.fn(async (url) => (url.endsWith("/denied")
+      ? jsonRes(403, { error: "You do not have permission for this action", code: "FORBIDDEN", details: { missing: ["admin"] } })
+      : jsonRes(409, { error: "The item changed meanwhile; reload and retry", code: "REVISION_CONFLICT" })));
+    const api = createApiClient({ apiUrl: API, fetchImpl, tokenStore: memoryStore(SESSION), promptFn: () => null });
+    const denied = await api.request("/denied").catch((e) => e);
+    expect(denied.code).toBe("FORBIDDEN");
+    expect(denied.message).toBe("Your role cannot do this: it needs the admin permission.");
+    const stale = await api.request("/stale").catch((e) => e);
+    expect([stale.code, stale.message]).toEqual(["REVISION_CONFLICT", "The item changed meanwhile; reload and retry"]);
+  });
+});
+
+describe("navigation follows the signed-in role (display only; the server enforces)", () => {
+  it("owner-only sections are hidden from editors and reviewers", async () => {
+    const { visibleNav } = await import("../roles.js");
+    const ids = (role) => visibleNav([{ id: "pipeline" }, { id: "operations", needs: "admin" }], role).map((n) => n.id);
+    expect(ids("owner")).toEqual(["pipeline", "operations"]);
+    expect(ids("editor")).toEqual(["pipeline"]);
+    expect(ids("reviewer")).toEqual(["pipeline"]);
+    expect(ids(undefined)).toEqual(["pipeline"]);
+  });
+});
