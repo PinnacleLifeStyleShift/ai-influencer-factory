@@ -42,7 +42,7 @@ async function waitFor(url) {
 try {
   start("node", ["src/server.js"], path.join(root, "backend"), {
     PORT: String(API_PORT), DATABASE_URL: process.env.TEST_DATABASE_URL,
-    OWNER_API_TOKEN: TOKEN, FRONTEND_URL: WEB,
+    OWNER_API_TOKEN: TOKEN, FRONTEND_URL: WEB, ROLE_INVITES: "enabled",
   });
   start("npx", ["vite", "--host", "127.0.0.1", "--port", String(WEB_PORT), "--strictPort"], root, { VITE_API_URL: API });
   await waitFor(`${API}/health`);
@@ -85,7 +85,43 @@ try {
   await page.waitForResponse((r) => r.url().startsWith(`${API}/api/characters`) && r.status() === 200);
   assert.equal(dialogs.length, 1, "no prompt after reload in the same tab");
 
-  console.log(`UI auth e2e passed: ${apiRequests.length} API requests, ${dialogs.length} prompt, external requests blocked: ${external.length}`);
+  // Two-role sign-in: the owner issues a reviewer invite in Team access; a
+  // separate browser signs in with the code once and gets reviewer rights.
+  await page.getByRole("button", { name: "Operations" }).first().click();
+  const team = page.getByLabel("Team access");
+  await team.getByLabel("Who it is for").fill("Synthetic reviewer");
+  await team.getByRole("button", { name: "Create invite" }).click();
+  const code = await team.getByLabel("Invite code").inputValue();
+  assert.ok(code.length >= 32, "a code is shown once");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  // Synthetic, throwaway code; blurred anyway so no credential-shaped value is captured.
+  await team.getByLabel("Invite code").evaluate((el) => { el.style.filter = "blur(5px)"; });
+  await team.screenshot({ path: path.join(root, "docs/screenshots/spec-1111-team-access.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  assert.ok(overflow <= 1, `no horizontal page scroll on a phone (${overflow}px)`);
+  await team.screenshot({ path: path.join(root, "docs/screenshots/spec-1111-team-access-phone.png") });
+  await page.setViewportSize({ width: 1280, height: 900 });
+
+  const reviewer = await browser.newContext();
+  const rp = await reviewer.newPage();
+  const rDialogs = [];
+  rp.on("dialog", async (d) => { rDialogs.push(d.message()); await d.accept(rDialogs.length === 1 ? code : undefined); });
+  await rp.route("**/*", (route) => (["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort()));
+  await rp.goto(WEB);
+  await rp.waitForResponse((r) => r.url().startsWith(`${API}/api/characters`) && r.status() === 200, { timeout: 20000 });
+  assert.match(rDialogs[0], /access code/, "the prompt accepts an access code");
+  const rToken = await rp.evaluate(() => sessionStorage.getItem("aif.session"));
+  const me = await (await fetch(`${API}/api/auth/me`, { headers: { Authorization: `Bearer ${rToken}` } })).json();
+  assert.equal(me.principal.role, "reviewer");
+  const denied = rp.waitForResponse((r) => r.url().endsWith("/api/system/operations"));
+  await rp.getByRole("button", { name: "Operations" }).first().click();
+  assert.equal((await denied).status(), 403, "a reviewer cannot open owner operations");
+  const again = await fetch(`${API}/api/auth/session`, { method: "POST", headers: { Authorization: `Bearer ${code}` } });
+  assert.equal(again.status, 401, "the code works once");
+  await reviewer.close();
+
+  console.log(`UI auth e2e passed: ${apiRequests.length} API requests, ${dialogs.length} prompt, external requests blocked: ${external.length}; two-role sign-in (owner issues reviewer invite, reviewer signs in once, owner operations denied)`);
   await browser.close();
 } finally {
   for (const p of procs) { try { process.kill(-p.pid, "SIGTERM"); } catch { /* gone */ } }

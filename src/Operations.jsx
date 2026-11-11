@@ -85,7 +85,79 @@ export default function Operations() {
           </div>
         )}
       </section>
+      <TeamAccess />
       {message && <div className="text-xs text-zinc-300" role="status">{message}</div>}
     </div>
+  );
+}
+
+/**
+ * Team access: single-use, expiring invites for editors and reviewers.
+ * The code is shown once here and nowhere else (the server keeps a hash).
+ * Off unless the owner sets ROLE_INVITES=enabled; then the panel says so.
+ */
+function TeamAccess() {
+  const [data, setData] = useState(null);
+  const [form, setForm] = useState({ role: "reviewer", label: "", ttlHours: 24 });
+  const [issued, setIssued] = useState(null);
+  const [status, setStatus] = useState("");
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => setData(await api.invites.list()), []);
+  useEffect(() => { load().catch((e) => setStatus(e.message)); }, [load]);
+  const create = async (e) => {
+    e.preventDefault();
+    setBusy(true); setStatus(""); setIssued(null);
+    try {
+      const r = await api.invites.create({ role: form.role, label: form.label, ttlHours: Number(form.ttlHours) });
+      setIssued(r); setForm((f) => ({ ...f, label: "" })); setStatus("Invite created");
+    } catch (err) { setStatus(err.message); } finally { setBusy(false); await load().catch(() => {}); }
+  };
+  const revoke = async (id) => {
+    if (!window.confirm("Revoke this invite? Anyone signed in with it is signed out.")) return;
+    try { const r = await api.invites.revoke(id); setStatus(`Invite revoked; ${r.sessionsRevoked} session(s) ended`); } catch (err) { setStatus(err.message); }
+    await load().catch(() => {});
+  };
+  const state = (i) => (i.revokedAt ? "revoked" : i.usedAt ? "used" : new Date(i.expiresAt) <= new Date() ? "expired" : "unused");
+  return (
+    <section className={card} aria-label="Team access">
+      <h2 className="text-sm text-zinc-200 mb-1">Team access</h2>
+      <p className="text-[11px] text-zinc-500 mb-3">A single-use code for an editor or reviewer. It works once, expires, and can be revoked. Owners sign in only with the owner token.</p>
+      {data && !data.enabled && <div className="text-[11px] text-amber-300 mb-2" role="note">Invites are off. Issuing credentials is an owner decision: set ROLE_INVITES=enabled on the API to allow them.</div>}
+      <form onSubmit={create} className="grid grid-cols-1 sm:grid-cols-4 gap-2 items-end">
+        <label className="text-[11px] text-zinc-400">Role
+          <select className={input} value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+            <option value="reviewer">Reviewer (read, approve)</option>
+            <option value="editor">Editor (edit, references, schedule, export)</option>
+          </select>
+        </label>
+        <label className="text-[11px] text-zinc-400 sm:col-span-2">Who it is for
+          <input className={input} value={form.label} maxLength={80} onChange={(e) => setForm({ ...form, label: e.target.value })} required />
+        </label>
+        <label className="text-[11px] text-zinc-400">Valid for (hours)
+          <input className={input} type="number" min={1} max={72} value={form.ttlHours} onChange={(e) => setForm({ ...form, ttlHours: e.target.value })} />
+        </label>
+        <button type="submit" className={ghost} disabled={busy || !data?.enabled}>{busy ? "Creating…" : "Create invite"}</button>
+      </form>
+      {issued && (
+        <div className="mt-3 text-[11px] text-zinc-300" role="alert">
+          Code for {issued.invite.label} ({issued.invite.role}), shown once. Send it privately; it expires {new Date(issued.invite.expiresAt).toLocaleString()}.
+          <input readOnly aria-label="Invite code" className={`${input} font-mono mt-1`} value={issued.code} onFocus={(e) => e.target.select()} />
+        </div>
+      )}
+      {data?.invites?.length > 0 && (
+        <div className="overflow-x-auto mt-3">
+          <table className="w-full min-w-[560px] text-[11px] text-zinc-300" aria-label="Invites">
+            <thead><tr className="text-left text-zinc-500"><th>For</th><th>Role</th><th>State</th><th>Expires</th><th></th></tr></thead>
+            <tbody>{data.invites.map((i) => (
+              <tr key={i.id} className="border-t border-[#2a2a3a]">
+                <td>{i.label}</td><td>{i.role}</td><td>{state(i)}</td><td>{new Date(i.expiresAt).toLocaleString()}</td>
+                <td>{!i.revokedAt && <button className="underline" onClick={() => revoke(i.id)}>Revoke</button>}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+      {status && <div className="text-[11px] text-zinc-300 mt-2" role="status">{status}</div>}
+    </section>
   );
 }

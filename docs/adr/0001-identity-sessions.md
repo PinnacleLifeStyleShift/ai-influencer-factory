@@ -28,3 +28,17 @@ PR #1 protects `/api` with a single owner bearer token. That cannot expire, cann
   - Only one human identity exists, so the `editor` and `reviewer` roles can only be exercised by sessions created in tests.
   - There is no audit log of who did what yet (planned with the AuditEvent record).
   - Rate limits are in-memory and per process.
+
+## Addendum, 11 November 2026: editor and reviewer invites (IF01)
+
+The limit above ("editor and reviewer can only be exercised by sessions created in tests") is closed with **owner-issued invites**, a second provider behind the same session exchange. The choice of a real login provider is still the owner's.
+
+- **Issuing:** `POST /api/auth/invites` (admin) creates a single-use code for `editor` or `reviewer`, never `owner`, valid for 1–72 hours.
+  - Only the code's SHA-256 is stored, and the code is returned once.
+  - Listing and audit never contain it.
+- **Exchange:** the code is exchanged at the same `POST /api/auth/session`, after the owner token is checked in constant time.
+  - A conditional update (`usedAt IS NULL`) makes it single-use, even under simultaneous exchanges.
+  - The session's principal is `invite:<id>`, so revoking the invite also ends that session.
+- **Off by default:** the feature is disabled unless `ROLE_INVITES=enabled`; otherwise the route returns `ROLE_INVITES_DISABLED`. Issuing credentials is an owner decision, and a deployed build does not decide it.
+- **Tests:** `backend/test/db-role-invites.test.js` (disabled state, single use, race, escalation, expiry, revocation, no code in storage or audit) and the two-role browser flow in `e2e/ui-auth.e2e.mjs`.
+  - **Weakening any of these** (owner role, reuse, flag bypass, revocation that leaves sessions) fails a test (mutation checks I1–I6 in `docs/status/spec-2026-11-11.md`).

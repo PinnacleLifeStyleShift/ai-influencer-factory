@@ -74,7 +74,7 @@ export function createApiClient({
     if (!pendingPrompt) {
       tokenStore.set("");
       pendingPrompt = Promise.resolve()
-        .then(() => promptFn(`Enter the owner API token for ${apiUrl}:`))
+        .then(() => promptFn(`Enter the owner API token or your access code for ${apiUrl}:`))
         .then(async (v) => {
           const credential = (v || "").trim();
           const session = credential ? await exchange(credential) : "";
@@ -162,6 +162,13 @@ export const characterImages = {
 export const system = {
   operations: () => request("/api/system/operations"),
   setGenerationPause: (paused, reason) => request("/api/system/generation-switch", { method: "POST", body: JSON.stringify({ paused, reason }) }),
+};
+
+// ─── Team access: owner-issued editor/reviewer invites ────
+export const invites = {
+  list: () => request("/api/auth/invites"),
+  create: (data) => request("/api/auth/invites", { method: "POST", body: JSON.stringify(data) }),
+  revoke: (id) => request(`/api/auth/invites/${id}/revoke`, { method: "POST", body: "{}" }),
 };
 
 // ─── Measurement (readings with provenance) ───────────────
