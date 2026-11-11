@@ -205,8 +205,24 @@ router.post("/:id/assemble", ["edit"], handle("POST /pipeline/:id/assemble", asy
     throw new ApiError("ASSEMBLY_FAILED", 422, "The assembled file does not match the plan", { problems: info.problems, measuredSec: info.durationSec, plannedSec });
   }
   const name = `rendered-${info.sha256.slice(0, 24)}.mp4`;
-  const stored = await req.mediaStore.write(name, out.bytes);
-  if (!stored.ok) throw new ApiError("MEDIA_STORE_NOT_CONFIGURED", 409, `Could not store the rendered file: ${stored.problem}`);
+  // The rendered file must be stored before anything is recorded: no
+  // AssetVersion or lineage points at bytes that do not exist, and the item is
+  // untouched, so a retry after the store recovers is safe. A full store and a
+  // failing store are reported as what they are (db-storage-failures test),
+  // never as "not configured", which would send the operator the wrong way.
+  let stored;
+  try {
+    stored = await req.mediaStore.write(name, out.bytes);
+  } catch (err) {
+    if (err?.code === "ENOSPC" || err?.code === "EDQUOT") {
+      throw new ApiError("MEDIA_STORE_FULL", 507, "Media storage is full; nothing was recorded. Free space or raise the quota, then render again.");
+    }
+    throw new ApiError("MEDIA_STORE_WRITE_FAILED", 503, "Media storage failed while saving the rendered file; nothing was recorded. Try again later.");
+  }
+  if (!stored.ok) {
+    if (stored.problem === "MEDIA_OUTPUT_NOT_CONFIGURED") throw new ApiError("MEDIA_STORE_NOT_CONFIGURED", 409, "Assembly needs writable media storage, which is not configured");
+    throw new ApiError("MEDIA_STORE_WRITE_FAILED", 503, `Media storage refused the rendered file (${stored.problem}); nothing was recorded. Try again later.`);
+  }
   const provenance = {
     shots: clips.map((c) => ({ shotIndex: c.shotIndex, shotKey: c.shotKey, clipSha256: c.sha256, trimSec: c.trimSec })),
     tool: out.tool, settings: { aspectRatio: item.exportSettings?.aspectRatio || "9:16", fps: 30, codec: "h264", audio: "none", captions: "not burned in" },

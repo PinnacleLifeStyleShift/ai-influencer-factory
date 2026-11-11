@@ -73,7 +73,7 @@ const GATE_ENV = {
   PROVIDER_PRICES_USD: JSON.stringify({ "mock:image": "1.00" }), SPEND_CAP_PER_JOB_USD: "5", SPEND_CAP_DAILY_USD: "100",
   SPEND_CAP_MONTHLY_USD: "100", PRICE_CURRENCY: "USD", PRICE_VERSION: "test-fixture-v1", SPEND_CAP_TIMEZONE: "UTC",
 };
-const TABLES = ["characters", "character_images", "rights_records", "generation_reservations", "generation_jobs", "pipeline_items", "sessions", "campaign_invoices"];
+const TABLES = ["characters", "character_images", "rights_records", "generation_reservations", "generation_jobs", "pipeline_items", "sessions", "campaign_invoices", "role_invites"];
 
 async function snapshot() {
   const rows = {};
@@ -113,7 +113,8 @@ test("denied roles and sessions never reach a protected operation through any UR
     env: GATE_ENV, ledger: createPrismaLedger(prisma), log: { error() {}, info() {} },
     adapters: { image: { "mock:image": { capabilities: {}, generate: async () => { providerCalls++; return { imageUrl: "https://example.test/x.png" }; } } }, video: {} },
   });
-  const app = await startApp({ env: { OWNER_API_TOKEN: TOKEN, API_RATE_LIMIT_PER_MIN: "100000", GENERATION_RATE_LIMIT_PER_MIN: "100000", ...GATE_ENV }, prisma, gate });
+  // ROLE_INVITES on, so invite denials are proven by role, not by the switch.
+  const app = await startApp({ env: { OWNER_API_TOKEN: TOKEN, API_RATE_LIMIT_PER_MIN: "100000", GENERATION_RATE_LIMIT_PER_MIN: "100000", ROLE_INVITES: "enabled", ...GATE_ENV }, prisma, gate });
   try {
     const character = await makeCharacter(prisma);
     const image = await prisma.characterImage.create({ data: { characterId: character.id, imageUrl: "https://example.test/ref.png", status: "candidate", source: "manual", fingerprint: "a".repeat(64) } });
@@ -140,6 +141,8 @@ test("denied roles and sessions never reach a protected operation through any UR
       ["generate content", "POST", "/pipeline/generate-content", { pipelineItemId: item.id }, ["editor", "reviewer"]],
       ["approve rights", "POST", `/character-images/${image.id}/rights/approve`, {}, ["editor", "reviewer"]],
       ["revoke all sessions", "POST", "/auth/sessions/revoke-all", {}, ["editor", "reviewer"]],
+      ["issue invite", "POST", "/auth/invites", { role: "editor", label: "Synthetic" }, ["editor", "reviewer"]],
+      ["revoke invite", "POST", "/auth/invites/missing/revoke", {}, ["editor", "reviewer"]],
       ["resolve job step", "POST", "/generation-jobs/steps/missing/resolve", { resolution: "not_charged", evidence: "x".repeat(12) }, ["editor", "reviewer"]],
       ["record invoice", "POST", `/campaigns/${camp.id}/invoices`, { number: "I-1", amount: "1", currency: "USD", issuedAt: "2026-11-01" }, ["editor", "reviewer"]],
       ["approve content", "POST", `/pipeline/${item.id}/approve`, { revision: item.revision, snapshotHash: "x" }, ["editor"]],

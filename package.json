@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "start": "serve dist -s -l ${PORT:-3000}",
     "test": "vitest run --dir src",
-    "test:e2e": "cd backend && scripts/with-test-postgres.sh sh -c 'node ../e2e/ui-auth.e2e.mjs && node ../e2e/character-bible.e2e.mjs && node ../e2e/content-package.e2e.mjs && node ../e2e/generation-jobs.e2e.mjs && node ../e2e/review-export.e2e.mjs && node ../e2e/publishing.e2e.mjs && node ../e2e/measurement.e2e.mjs && node ../e2e/production-build.e2e.mjs'"
+    "test:e2e": "cd backend && scripts/with-test-postgres.sh sh -c 'node ../e2e/ui-auth.e2e.mjs && node ../e2e/character-bible.e2e.mjs && node ../e2e/content-package.e2e.mjs && node ../e2e/generation-jobs.e2e.mjs && node ../e2e/review-export.e2e.mjs && node ../e2e/media-playback.e2e.mjs && node ../e2e/publishing.e2e.mjs && node ../e2e/measurement.e2e.mjs && node ../e2e/production-build.e2e.mjs'"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

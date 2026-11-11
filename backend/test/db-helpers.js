@@ -28,13 +28,16 @@ export function newClient() {
   return createPrismaClient(TEST_DB_URL);
 }
 
-const TABLES = [
-  "metric_observations", "campaign_receipts", "campaign_invoices", "system_controls", "asset_versions", "publish_reconciliations", "publish_deliveries", "publish_jobs", "export_manifests", "reconciliation_records", "generation_steps", "generation_jobs", "script_versions", "rights_records", "character_versions", "audit_events", "sessions", "generation_reservations", "generation_applications", "character_images", "campaign_submissions", "campaigns", "pipeline_items",
-  "scripts", "trends", "content", "characters",
-];
-
+/**
+ * Empties every application table in the test schema (all but Prisma's
+ * migration history). Derived from the schema rather than a hand-kept list,
+ * so a newly added table cannot leak rows between tests.
+ */
 export async function resetDb(prisma) {
-  await prisma.$executeRawUnsafe(`TRUNCATE ${TABLES.map((t) => `"${t}"`).join(", ")} RESTART IDENTITY CASCADE`);
+  const rows = await prisma.$queryRawUnsafe(
+    `SELECT tablename FROM pg_tables WHERE schemaname = current_schema() AND tablename <> '_prisma_migrations'`);
+  if (!rows.length) return;
+  await prisma.$executeRawUnsafe(`TRUNCATE ${rows.map((r) => `"${r.tablename}"`).join(", ")} RESTART IDENTITY CASCADE`);
 }
 
 let seq = 0;
