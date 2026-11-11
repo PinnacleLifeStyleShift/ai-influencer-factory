@@ -388,6 +388,25 @@ model Session {
   @@map("sessions")
 }
 
+/// A single-use, expiring invitation for an editor or reviewer, issued by the
+/// owner. Only the SHA-256 of the code is stored; the code is shown once.
+/// Exchanged at POST /api/auth/session for a session with principalId
+/// "invite:<id>", so revoking the invite also finds and ends that session.
+model RoleInvite {
+  id            String    @id @default(cuid())
+  codeHash      String    @unique @map("code_hash")
+  role          String    // editor | reviewer (never owner)
+  label         String
+  workspaceId   String    @default("default") @map("workspace_id")
+  createdBy     String    @map("created_by")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  expiresAt     DateTime  @map("expires_at")
+  usedAt        DateTime? @map("used_at")
+  revokedAt     DateTime? @map("revoked_at")
+
+  @@map("role_invites")
+}
+
 // ─── AUDIT EVENTS ────────────────────────────────────────────
 // Redacted evidence of who did what: actor, route pattern, target id, result
 // and correlation id. Never request bodies, tokens or provider payloads.

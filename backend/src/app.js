@@ -19,7 +19,8 @@ import { requireAuthConfigured, requireSession } from "./middleware/auth.js";
 import { allow } from "./auth/permissions.js";
 import { onlyFields } from "./lib/requests.js";
 import { requestId } from "./middleware/requestId.js";
-import { createOwnerTokenProvider } from "./auth/providers.js";
+import { createOwnerTokenProvider, createCompositeProvider } from "./auth/providers.js";
+import { createInviteService } from "./auth/invites.js";
 import { createSessionStore } from "./auth/sessions.js";
 import { createSessionHandler, authRoutes } from "./routes/auth.js";
 import { createAuditLog } from "./services/audit.js";
@@ -49,7 +50,8 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
   // Publishing: real platforms are not implemented; the gate fails closed.
   const publishing = { gate: createPublishingGate({ env, publishers: publishers || defaultPublishers(env) }), faults: publishFaults || null, now: publishClock || (() => new Date()) };
   const sessionStore = sessions || createSessionStore(prisma);
-  const provider = authProvider || createOwnerTokenProvider(env);
+  const invites = createInviteService(prisma);
+  const provider = authProvider || createCompositeProvider(createOwnerTokenProvider(env), invites, env);
   const audit = createAuditLog(prisma);
 
   // One gate per app, injected into every route via req.generationGate.
@@ -162,7 +164,7 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
   });
   api.get("/system/generation-policy", allow(["admin"]), (req, res) => res.json(req.generationGate.describe()));
 
-  api.use("/auth", authRoutes({ sessions: sessionStore }));
+  api.use("/auth", authRoutes({ sessions: sessionStore, invites, env }));
   api.use("/characters", characterRoutes);
   api.use("/character-images", characterImageRoutes);
   api.use("/content", contentRoutes);

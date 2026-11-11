@@ -42,7 +42,7 @@ test("fresh database: both migrations apply and match schema.prisma", opts, asyn
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.ok(schemaMatches("mig_fresh"));
   await withClient("mig_fresh", async (c) => {
-    assert.deepEqual(await appliedMigrations(c), ["20260321000000_init", "20261108000000_phase1_safety", "20261109000000_generation_fencing", "20261110000000_sessions", "20261110010000_audit_events", "20261110020000_character_versions_rights", "20261110030000_content_packages", "20261110040000_generation_jobs", "20261110050000_review_calendar_export", "20261110060000_publishing", "20261110070000_measurement", "20261110080000_sponsor_authorization", "20261110090000_reconciliation_revisions", "20261110100000_rights_revocation", "20261110110000_asset_versions", "20261110120000_system_controls", "20261111000000_metric_revisions", "20261111010000_asset_lineage"]);
+    assert.deepEqual(await appliedMigrations(c), ["20260321000000_init", "20261108000000_phase1_safety", "20261109000000_generation_fencing", "20261110000000_sessions", "20261110010000_audit_events", "20261110020000_character_versions_rights", "20261110030000_content_packages", "20261110040000_generation_jobs", "20261110050000_review_calendar_export", "20261110060000_publishing", "20261110070000_measurement", "20261110080000_sponsor_authorization", "20261110090000_reconciliation_revisions", "20261110100000_rights_revocation", "20261110110000_asset_versions", "20261110120000_system_controls", "20261111000000_metric_revisions", "20261111010000_asset_lineage", "20261111020000_role_invites"]);
   });
   const again = migrateDeploy("mig_fresh");
   assert.equal(again.status, 0, "re-running is a no-op");
@@ -62,7 +62,7 @@ test("legacy db-push database: verified baseline, data preserved, new columns ad
   assert.ok(schemaMatches("mig_legacy"));
 
   await withClient("mig_legacy", async (c) => {
-    assert.deepEqual(await appliedMigrations(c), ["20260321000000_init", "20261108000000_phase1_safety", "20261109000000_generation_fencing", "20261110000000_sessions", "20261110010000_audit_events", "20261110020000_character_versions_rights", "20261110030000_content_packages", "20261110040000_generation_jobs", "20261110050000_review_calendar_export", "20261110060000_publishing", "20261110070000_measurement", "20261110080000_sponsor_authorization", "20261110090000_reconciliation_revisions", "20261110100000_rights_revocation", "20261110110000_asset_versions", "20261110120000_system_controls", "20261111000000_metric_revisions", "20261111010000_asset_lineage"]);
+    assert.deepEqual(await appliedMigrations(c), ["20260321000000_init", "20261108000000_phase1_safety", "20261109000000_generation_fencing", "20261110000000_sessions", "20261110010000_audit_events", "20261110020000_character_versions_rights", "20261110030000_content_packages", "20261110040000_generation_jobs", "20261110050000_review_calendar_export", "20261110060000_publishing", "20261110070000_measurement", "20261110080000_sponsor_authorization", "20261110090000_reconciliation_revisions", "20261110100000_rights_revocation", "20261110110000_asset_versions", "20261110120000_system_controls", "20261111000000_metric_revisions", "20261111010000_asset_lineage", "20261111020000_role_invites"]);
     const [ch] = await c.$queryRawUnsafe(`SELECT name, image_generations FROM characters WHERE id = 'ch1'`);
     assert.equal(ch.name, "Synthetic Legacy");
     assert.equal(ch.image_generations, 0);
@@ -123,7 +123,7 @@ for (const emptyHistory of [false, true]) {
     if (!emptyHistory) assert.match(r.stdout, /marked rolled back/);
     assert.ok(schemaMatches(schema));
     await withClient(schema, async (c) => {
-      assert.equal((await appliedMigrations(c)).length, 18);
+      assert.equal((await appliedMigrations(c)).length, 19);
       const [ch] = await c.$queryRawUnsafe(`SELECT name FROM characters WHERE id = 'ch1'`);
       assert.equal(ch.name, "Synthetic Legacy");
     });
@@ -195,6 +195,28 @@ test("rollback compatibility: an older secure revision starts against the newest
   fs.rmSync(dir, { recursive: true, force: true });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /No pending migrations/);
+});
+
+// Rollback gate (spec of 11 November 2026): the unauthenticated 277d2d3
+// image starts with `prisma db push` from its own schema. Against a migrated
+// database that push would drop every newer table and column, so it must
+// refuse instead of "rolling back" by deleting data. This is evidence that
+// the old image is NOT a rollback path (it fails to start), not a fallback.
+test("rollback gate: the old image's db push refuses the migrated schema and loses nothing", opts, async () => {
+  const schema = "mig_old_image";
+  assert.equal(migrateDeploy(schema).status, 0);
+  await withClient(schema, async (c) => {
+    await c.$executeRawUnsafe(`INSERT INTO characters (id, character_id, name, updated_at) VALUES ('ch1', 'INFL-001', 'Synthetic', now())`);
+    await c.$executeRawUnsafe(`INSERT INTO sessions (id, token_hash, principal_id, role, auth_provider, expires_at) VALUES ('s1', 'h', 'owner', 'owner', 'test', now() + interval '1 hour')`);
+  });
+  const push = run("npx", ["prisma", "db", "push", "--schema", "prisma/baseline/277d2d3.schema.prisma"], schema);
+  assert.notEqual(push.status, 0, "db push without --accept-data-loss must refuse");
+  assert.match(push.stdout + push.stderr, /data loss|accept-data-loss/i);
+  assert.ok(schemaMatches(schema), "schema unchanged");
+  await withClient(schema, async (c) => {
+    assert.equal((await c.$queryRawUnsafe(`SELECT count(*)::int AS n FROM sessions`))[0].n, 1, "newer tables and their rows survive");
+    assert.equal((await appliedMigrations(c)).length, 19);
+  });
 });
 
 test("every migration after the baseline is additive (no drops, renames or NOT NULL columns without defaults)", async () => {
