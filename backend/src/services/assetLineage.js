@@ -141,3 +141,23 @@ export function costSummary(reservations) {
     byCurrency, paidGenerations: unique.length, unknownActual,
   };
 }
+
+/**
+ * Adds the paid inputs each result was made from (e.g. the still a video was
+ * animated from), recursively and once each. A recorded input whose
+ * generation record is gone is unverifiable lineage, never "no input".
+ */
+export async function withInputs(prisma, applications) {
+  const byId = new Map(applications.map((a) => [a.reservationId, a]));
+  let pending = applications.flatMap((a) => a.inputReservationIds || []);
+  for (let depth = 0; pending.length && depth < MAX_LINEAGE_DEPTH; depth++) {
+    const ids = [...new Set(pending)].filter((id) => !byId.has(id));
+    if (!ids.length) break;
+    const found = await prisma.generationApplication.findMany({ where: { reservationId: { in: ids } } });
+    const missing = ids.filter((id) => !found.some((f) => f.reservationId === id));
+    if (missing.length) throw unverified(missing.map(() => ({ problem: "the generation record of an input (such as the still a video was made from) is missing" })));
+    found.forEach((f) => byId.set(f.reservationId, f));
+    pending = found.flatMap((f) => f.inputReservationIds || []);
+  }
+  return [...byId.values()];
+}

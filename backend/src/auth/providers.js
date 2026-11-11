@@ -36,18 +36,3 @@ export function createOwnerTokenProvider(env) {
   };
 }
 
-/**
- * The owner token first, then (only when enabled) a single-use role invite.
- * The owner token is checked in constant time before any database lookup.
- */
-export function createCompositeProvider(owner, invites, env) {
-  return {
-    name: owner.name,
-    async authenticate(credential) {
-      const p = await owner.authenticate(credential);
-      if (p) return p;
-      if (!invites || env.ROLE_INVITES !== "enabled") return null;
-      return invites.redeem(credential);
-    },
-  };
-}

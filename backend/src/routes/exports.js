@@ -3,7 +3,8 @@ import { onlyFields } from "../lib/requests.js";
 import { ApiError, routeError } from "../lib/errors.js";
 import { snapshotHash } from "../lib/revision.js";
 import { isUniqueViolation } from "../lib/requests.js";
-import { buildExport, approvalIsCurrent, readableManifest } from "../services/exportManifest.js";
+import { buildExport, approvalIsCurrent, readableManifest, captionsFile } from "../services/exportManifest.js";
+import crypto from "crypto";
 import { clipSource } from "../services/assetLineage.js";
 import { inspectMedia } from "../services/mediaInspect.js";
 import { claimIsLive } from "./pipeline.js";
@@ -86,10 +87,16 @@ router.get("/:id/exports/:exportId/download", handle("GET /pipeline/:id/exports/
   const record = await req.prisma.exportManifest.findFirst({ where: { id: req.params.exportId, pipelineItemId: req.params.id } });
   if (!record) throw new ApiError("NOT_FOUND", 404, "Export not found");
   const current = record.snapshotHash === (await currentHashOf(req.prisma, req.params.id));
-  const format = req.query.format === "text" ? "text" : "json";
+  const format = ["text", "captions"].includes(req.query.format) ? req.query.format : "json";
   res.set("X-Export-Current", String(current));
   res.set("Cache-Control", "no-store");
   const base = `export-${record.pipelineItemId}-r${record.revision}-${record.manifestHash.slice(0, 12)}`;
+  if (format === "captions") {
+    const body = captionsFile(record.manifest);
+    res.set("Content-Disposition", `attachment; filename="${base}-captions.txt"`);
+    res.set("X-Content-SHA256", crypto.createHash("sha256").update(body).digest("hex"));
+    return res.type("text/plain").send(body);
+  }
   if (format === "text") {
     res.set("Content-Disposition", `attachment; filename="${base}.txt"`);
     return res.type("text/plain").send(readableManifest(record.manifest, { current }));

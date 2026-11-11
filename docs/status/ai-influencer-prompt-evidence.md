@@ -1,5 +1,7 @@
 # Evidence packet: AI Influencer project prompt (10 November 2026)
 
+> **Historical record.** For current status, read `docs/status/spec-2026-11-11.md`, the maintained matrix. On 11 November 2026 Railway showed both services serving `25a0eab` (PR #21). Statements below about "not merged", merge order or the serving revision describe the time they were written.
+
 This is the response to the owner's AI Influencer project prompt and the implementation specification of 10 November. **Base:** PR #9 head `fb53e4c`. **Final:** `main` at `2851948` (PRs #1–#16 merged on 10 November 2026).
 
 Statuses are kept separate, as the prompt requires:
@@ -39,7 +41,7 @@ Statuses are kept separate, as the prompt requires:
 | IF07-01/02 caps across processes; same key/different payload conflicts; expired rights stop before reserving | Done (#5, #12) | `db-jobs`, `db-generation-races`, `db-characters` |
 | IF08-01/02 a crash at each boundary never re-buys; a stale worker can't overwrite | Done (#5) | `db-jobs` |
 | IF09-01 the approved hash binds rendered assets and presentation fields | Done (#6, rendered file in #13) | `db-review-export`, `db-assembly` |
-| IF09-02 playback duration independently measured | Done: ffmpeg full decode plus container measurement (#13). **Browser playback not tested** (Chromium has no H.264) | `db-assembly` |
+| IF09-02 playback duration independently measured | Done: ffmpeg full decode plus container measurement (#13). Browser playback was not tested at the time. **Since 11 November:** an assembled H.264 file plays to the end in Playwright's Chromium (`e2e/media-playback`) | `db-assembly` |
 | IF10-01/02 DST gaps/folds need a choice; a passed time never means published | Done (#6) | `zoned-time`, `db-review-export` |
 | IF11-01/02 stale approval or missing media blocks ready; repeat export gives identical hashes | Done (#6, #13) | `db-review-export`, `db-assembly` |
 | IF12-01 parallel resolutions give one decision | Done (#11) | `db-reconciliation-race` (two PostgreSQL connections) |
@@ -98,7 +100,7 @@ Desktop and phone captures are in `docs/screenshots/`. New in this round: `pkg-m
 
 ## Not run / remaining holds
 
-- **Not run:** anything against production or live providers; browser video playback (Chromium has no H.264); signed-link expiry (no signed links exist).
+- **Not run:** anything against production or live providers; browser video playback (since added: `e2e/media-playback`); signed-link expiry (no signed links exist).
 - **Remaining owner actions:**
   1. **`OWNER_API_TOKEN`:** set on 10 November through the Railway connection, so its value appears in that session's tool log. Replace it with one the owner generates.
   2. **Private media storage:** approval and its retention policy.

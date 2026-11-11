@@ -4,7 +4,7 @@ import { snapshotHash, mediaTypeOf } from "../lib/revision.js";
 import { inspectMedia } from "./mediaInspect.js";
 import { offsetLabel } from "../lib/zonedTime.js";
 import { ApiError } from "../lib/errors.js";
-import { clipSource, traceAsset, publicationRights, costSummary } from "./assetLineage.js";
+import { clipSource, traceAsset, publicationRights, costSummary, withInputs } from "./assetLineage.js";
 
 /**
  * Export of the approved, immutable version of a pipeline item.
@@ -93,7 +93,8 @@ export async function buildExport(prisma, mediaStore, item) {
       sources.push({ kind: "clip", source: apps.length ? { inputKind: "generation", application: apps.at(-1) } : { inputKind: "manual" } });
     }
   }
-  const applications = sources.flatMap((x) => (x.kind === "rendered" ? x.trace.leaves : x.source.application ? [x.source.application] : []));
+  // The results distributed, plus the paid inputs they were made from.
+  const applications = await withInputs(prisma, sources.flatMap((x) => (x.kind === "rendered" ? x.trace.leaves : x.source.application ? [x.source.application] : [])));
   const reservationIds = [...new Set(applications.map((a) => a.reservationId))];
   const reservations = reservationIds.length ? await prisma.generationReservation.findMany({ where: { id: { in: reservationIds } } }) : [];
   const byId = new Map(reservations.map((r) => [r.id, r]));
@@ -189,4 +190,24 @@ export function readableManifest(manifest, { current }) {
     "", `Excluded: ${manifest.excluded.join(", ")}`,
   ];
   return lines.join("\n") + "\n";
+}
+
+/**
+ * The approved caption, hashtags and disclosure as their own file (review
+ * IF-CR03). Rendered video is silent and captions are not burned in, so the
+ * text travels beside the media. Built only from the stored manifest, so a
+ * later edit to the item can never appear in an old export.
+ */
+export function captionsFile(manifest) {
+  return [
+    `Caption, hashtags and disclosure approved for item ${manifest.pipelineItemId}, revision ${manifest.revision} (snapshot ${manifest.snapshotHash}).`,
+    "Captions are not burned into the video; the video has no audio.",
+    "",
+    "Caption:", manifest.caption || "",
+    "",
+    `Hashtags: ${manifest.hashtags || ""}`,
+    "",
+    `Disclosure: ${manifest.disclosure || ""}`,
+    "",
+  ].join("\n");
 }

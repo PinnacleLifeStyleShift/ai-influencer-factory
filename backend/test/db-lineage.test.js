@@ -252,3 +252,29 @@ test("nested assemblies are followed; another character's render and lineage cyc
   const a = await call(`/api/pipeline/${mixed.item.id}/assemble`, "POST");
   assert.equal(a.body.code, "LINEAGE_UNVERIFIED", JSON.stringify(a.body));
 }));
+
+// Found by the three-role journey (11 Nov): a shot video is animated from a
+// paid still. The still's references and cost belong to the distributed video.
+test("the still a video was animated from: its reference rights block export, its cost counts, its loss is unverifiable", dbOpts, () => withApp(async (call) => {
+  const c = await makeCharacter(prisma);
+  const ref = await reference(c.id); // provider input only
+  const still = await reservation({ micros: 100_000 });
+  const video = await reservation({ micros: 500_000 });
+  const { item } = await packagedItem(call, { 0: { reservation: video, url: "https://example.test/clip-10s-b.mp4" } }, { character: c });
+  await prisma.generationApplication.create({ data: {
+    reservationId: still.id, pipelineItemId: item.id, kind: "image", mediaUrl: "https://example.test/still.png", revision: 1,
+    referencesSent: [ref.fingerprint], conditioning: "references_sent",
+  } });
+  await prisma.generationApplication.update({ where: { reservationId: video.id }, data: { inputReservationIds: [still.id] } });
+  await approve(call, item.id);
+  const blocked = await exportOf(call, item.id);
+  assert.equal(blocked.body.code, "RIGHTS_INCOMPLETE", JSON.stringify(blocked.body));
+
+  await clearForPublication(ref);
+  const ok = await exportOf(call, item.id);
+  assert.equal(ok.status, 201, JSON.stringify(ok.body));
+  assert.deepEqual([ok.body.export.manifest.cost.actualKnownMicros, ok.body.export.manifest.cost.paidGenerations], [600_000, 2], "video and its still, once each");
+
+  await prisma.generationApplication.delete({ where: { reservationId: still.id } });
+  assert.equal((await exportOf(call, item.id)).body.code, "LINEAGE_UNVERIFIED");
+}));

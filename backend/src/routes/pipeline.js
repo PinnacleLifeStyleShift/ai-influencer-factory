@@ -455,8 +455,20 @@ router.post("/generate-content", ["generate", "spend"], onlyFields(["pipelineIte
           "The item changed or this generation lost its claim; the result was recorded but not applied",
           { reservationId: r.reservationId, result: { [kind === "image" ? "imageUrl" : "videoUrl"]: mediaUrl } });
       }
+      // A video is animated from the still: record that paid input by its
+      // reservation, so export re-checks the still's reference rights and
+      // counts its cost (lineage of inputs, not only of outputs). The still is
+      // the one made in this workflow, else the item's current still.
+      let inputReservationIds = [];
+      if (kind === "video") {
+        const still = stillReservationId || (await tx.generationApplication.findFirst({
+          where: { pipelineItemId: item.id, kind: "image", mediaUrl: item.imageUrl ?? "" }, orderBy: { appliedAt: "desc" },
+        }))?.reservationId;
+        if (still) inputReservationIds = [still];
+      } else stillReservationId = r.reservationId;
       await tx.generationApplication.create({
         data: {
+          inputReservationIds,
           reservationId: r.reservationId, pipelineItemId: item.id, kind, mediaUrl, revision: expectedRevision + 1,
           // Actual inputs: what was really sent, not what was stored.
           characterVersionId: version.id,
@@ -471,6 +483,7 @@ router.post("/generate-content", ["generate", "spend"], onlyFields(["pipelineIte
     outcomes.push({ ...recorded, applied: true, recovered: r.replayed === true });
   }
 
+  let stillReservationId = null; // set when this workflow applies a new still
   const steps = [];
   if (needsImage) {
     steps.push({

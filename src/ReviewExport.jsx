@@ -201,6 +201,7 @@ export default function ReviewExport({ item, hasShots, onChanged }) {
                   · revision {e.revision} · {e.manifestHash.slice(0, 10)}…{" "}
                   <button className="underline focus:outline focus:outline-2 focus:outline-[#C8FF00]" onClick={() => download(e, "json")}>JSON</button>{" "}
                   <button className="underline focus:outline focus:outline-2 focus:outline-[#C8FF00]" onClick={() => download(e, "text")}>Readable</button>{" "}
+                  <button className="underline focus:outline focus:outline-2 focus:outline-[#C8FF00]" onClick={() => download(e, "captions")}>Captions</button>{" "}
                   <button className="underline focus:outline focus:outline-2 focus:outline-[#C8FF00]" onClick={async () => {
                     try {
                       const v = await api.pipeline.verifyExport(item.id, e.id);

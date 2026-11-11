@@ -5,13 +5,19 @@ import { sessionTtlMs } from "../auth/sessions.js";
 import { invitesEnabled } from "../auth/invites.js";
 
 /** POST /api/auth/session — exchange a provider credential for a session. Mounted before requireSession. */
-export function createSessionHandler({ env, provider, sessions }) {
+export function createSessionHandler({ env, provider, sessions, invites }) {
   return async (req, res, next) => {
     try {
       const m = /^Bearer\s+(.+)$/i.exec(req.get("authorization") || "");
-      const principal = m ? await provider.authenticate(m[1].trim()) : null;
-      if (!principal) return sendError(res, new ApiError("AUTH_REQUIRED", 401, "Invalid credential"));
-      const { token, session } = await sessions.create(principal, { provider: principal.authProvider || provider.name, ttlMs: sessionTtlMs(env) });
+      const credential = m ? m[1].trim() : "";
+      const owner = credential ? await provider.authenticate(credential) : null;
+      // The owner token first (constant time); then, only when enabled, an
+      // invite, whose claim and session are created atomically (IF-CR01).
+      let enrolled = null;
+      if (owner) enrolled = { principal: owner, ...(await sessions.create(owner, { provider: provider.name, ttlMs: sessionTtlMs(env) })) };
+      else if (credential && invites && invitesEnabled(env)) enrolled = await invites.enroll(credential, { sessions, ttlMs: sessionTtlMs(env) });
+      if (!enrolled) return sendError(res, new ApiError("AUTH_REQUIRED", 401, "Invalid credential"));
+      const { principal, token, session } = enrolled;
       // Lets the audit trail attribute the new session to its principal.
       req.principal = { id: principal.id, role: principal.role, workspaceId: session.workspaceId, sessionId: session.id };
       res.status(201).json({

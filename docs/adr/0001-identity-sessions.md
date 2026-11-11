@@ -42,3 +42,12 @@ The limit above ("editor and reviewer can only be exercised by sessions created 
 - **Off by default:** the feature is disabled unless `ROLE_INVITES=enabled`; otherwise the route returns `ROLE_INVITES_DISABLED`. Issuing credentials is an owner decision, and a deployed build does not decide it.
 - **Tests:** `backend/test/db-role-invites.test.js` (disabled state, single use, race, escalation, expiry, revocation, no code in storage or audit) and the two-role browser flow in `e2e/ui-auth.e2e.mjs`.
   - **Weakening any of these** (owner role, reuse, flag bypass, revocation that leaves sessions) fails a test (mutation checks I1–I6 in `docs/status/spec-2026-11-11.md`).
+
+### Correction, 11 November 2026: enrollment is atomic with revocation (review IF-CR01)
+
+The first version claimed the invite and created the session as two separate steps. Revoking between them left a live session.
+
+- **Now:** `invites.enroll()` locks the invite row and re-checks used, revoked and expiry under the lock. It creates the session and marks the invite used in one transaction. `revoke()` takes the same lock.
+- **Session failure:** if the session write fails, the claim rolls back and the invite stays usable.
+- **Defense in depth:** session lookup also rejects an invite-based session whose invite is revoked.
+- **Tests:** `backend/test/db-invite-revocation-race.test.js`, which uses two real PostgreSQL connections.

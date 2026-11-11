@@ -203,3 +203,14 @@ test("rate limiting is independent of role enforcement", opts, async () => {
     assert.deepEqual(statuses, [403, 403, 429, 429]);
   } finally { await app.close(); }
 });
+
+// The browser's role table (src/roles.js) only decides what to SHOW; it must
+// match the server's table that decides what is ALLOWED, so the UI never hides
+// a permitted action or offers a forbidden one by drift (shared-contract
+// recommendation, 11 November review).
+test("the display role table matches the server's permission table exactly", async () => {
+  const { ROLE_PERMISSIONS: server } = await import("../src/auth/permissions.js");
+  const { ROLE_PERMISSIONS: display } = await import("../../src/roles.js");
+  assert.deepEqual(Object.keys(display).sort(), Object.keys(server).sort());
+  for (const role of Object.keys(server)) assert.deepEqual([...display[role]].sort(), [...server[role]].sort(), role);
+});

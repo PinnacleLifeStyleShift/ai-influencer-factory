@@ -1,5 +1,7 @@
 # Completion report
 
+> **Historical record.** For current status, read `docs/status/spec-2026-11-11.md`, the maintained matrix. On 11 November 2026 Railway showed both services serving `25a0eab` (PR #21). Statements below about "not merged", merge order or the serving revision describe the time they were written.
+
 > **Updated after PRs #10–#14:** see `ai-influencer-prompt-evidence.md` for the owner's project-prompt evidence packet (route-bound authorization, reconciliation compare-and-swap, revocation holds, rendering, operations, migration gates).
 
 Recorded 2026-11-10 for the completion brief v1.0 (9 November 2026). Evidence labels are as in `current-baseline.md`: VERIFIED SOURCE, TESTED LOCALLY, HOSTED CI, DEPLOYED, LIVE-VERIFIED. No secret values appear here.

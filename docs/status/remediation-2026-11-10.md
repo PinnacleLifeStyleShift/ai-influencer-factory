@@ -1,5 +1,7 @@
 # Remediation: overnight review addendum of 10 November 2026 (AIF 1–3)
 
+> **Historical record.** For current status, read `docs/status/spec-2026-11-11.md`, the maintained matrix. On 11 November 2026 Railway showed both services serving `25a0eab` (PR #21). Statements below about "not merged", merge order or the serving revision describe the time they were written.
+
 This is the response to the AI Influencer Factory section of the review addendum. **Base:** `main` at `022d448`. **Branch:** `aif-remediation`, PR #18.
 
 > **Released 10 November 2026 at the owner's instruction ("Merge 18 and deploy"):** merged as `3fb3562` and deployed on both services. See "Release record" below.

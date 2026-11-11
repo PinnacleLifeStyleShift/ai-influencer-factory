@@ -9,8 +9,14 @@ import { hashToken } from "./sessions.js";
  *    ROLE_INVITES=enabled and the route needs "admin".
  *  - Never "owner": the only owner credential is OWNER_API_TOKEN, so an
  *    invite cannot escalate. Weakening this lets an editor mint an owner.
- *  - Single use, claimed with a conditional update (usedAt IS NULL), so two
- *    simultaneous exchanges create one session (db-role-invites race test).
+ *  - Single use, and enrollment is ATOMIC with revocation (review IF-CR01):
+ *    enroll() locks the invite row (SELECT ... FOR UPDATE), re-checks used,
+ *    revoked and expiry with the clock read under the lock, creates the
+ *    session and marks the invite used in ONE transaction; revoke() takes the
+ *    same row lock. So revocation either happens first (enrollment refused)
+ *    or waits and then ends the new session. A failed session write rolls the
+ *    claim back, leaving the invite usable. Session lookup also re-checks the
+ *    invite (defence in depth). Tests: db-invite-revocation-race.
  *  - Only a hash is stored and the code is returned once, like sessions.
  */
 export const INVITE_ROLES = ["editor", "reviewer"];
@@ -43,25 +49,50 @@ export function createInviteService(prisma, { now = () => new Date() } = {}) {
       return (await prisma.roleInvite.findMany({ orderBy: { createdAt: "desc" }, take: 100 })).map(safe);
     },
 
-    /** Claims an unused, unexpired, unrevoked invite; null otherwise. */
+    /**
+     * Claims the invite and enrolls its session atomically. Returns
+     * { token, session, principal } or null when the code is unknown, used,
+     * revoked or expired. `hooks.afterClaim` exists for race tests only.
+     */
+    async enroll(code, { sessions, ttlMs, hooks = {} }) {
+      if (!code) return null;
+      const codeHash = hashToken(code);
+      return prisma.$transaction(async (tx) => {
+        const [row] = await tx.$queryRaw`
+          SELECT id, role, workspace_id, used_at, revoked_at, expires_at
+          FROM role_invites WHERE code_hash = ${codeHash} FOR UPDATE`;
+        if (!row || row.used_at || row.revoked_at || new Date(row.expires_at) <= now()) return null;
+        await hooks.afterClaim?.();
+        const principal = { id: `invite:${row.id}`, role: row.role, workspaceId: row.workspace_id };
+        const { token, session } = await sessions.create(principal, { provider: "role-invite", ttlMs, client: tx });
+        await tx.roleInvite.update({ where: { id: row.id }, data: { usedAt: now() } });
+        return { token, session, principal };
+      });
+    },
+
+    /** Claim only, without a session. Kept for the race reproduction; not used by routes. */
     async redeem(code) {
       if (!code) return null;
       const at = now();
       const invite = await prisma.roleInvite.findUnique({ where: { codeHash: hashToken(code) } });
       if (!invite || invite.usedAt || invite.revokedAt || invite.expiresAt <= at) return null;
       const { count } = await prisma.roleInvite.updateMany({ where: { id: invite.id, usedAt: null, revokedAt: null }, data: { usedAt: at } });
-      if (count !== 1) return null; // someone else claimed it first
+      if (count !== 1) return null;
       return { id: `invite:${invite.id}`, role: invite.role, workspaceId: invite.workspaceId, authProvider: "role-invite" };
     },
 
     /** Revokes the invite and any session it created. */
     async revoke(id) {
-      const invite = await prisma.roleInvite.findUnique({ where: { id } });
-      if (!invite) throw new ApiError("NOT_FOUND", 404, "Invite not found");
-      const at = now();
-      await prisma.roleInvite.updateMany({ where: { id, revokedAt: null }, data: { revokedAt: at } });
-      const { count } = await prisma.session.updateMany({ where: { principalId: `invite:${id}`, revokedAt: null }, data: { revokedAt: at } });
-      return { invite: safe(await prisma.roleInvite.findUnique({ where: { id } })), sessionsRevoked: count };
+      // Same row lock as enroll(): waits for an enrollment in progress, so the
+      // session it creates is found and ended here.
+      return prisma.$transaction(async (tx) => {
+        const [row] = await tx.$queryRaw`SELECT id FROM role_invites WHERE id = ${id} FOR UPDATE`;
+        if (!row) throw new ApiError("NOT_FOUND", 404, "Invite not found");
+        const at = now();
+        await tx.roleInvite.updateMany({ where: { id, revokedAt: null }, data: { revokedAt: at } });
+        const { count } = await tx.session.updateMany({ where: { principalId: `invite:${id}`, revokedAt: null }, data: { revokedAt: at } });
+        return { invite: safe(await tx.roleInvite.findUnique({ where: { id } })), sessionsRevoked: count };
+      });
     },
   };
 }

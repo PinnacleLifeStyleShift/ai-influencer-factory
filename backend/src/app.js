@@ -19,7 +19,7 @@ import { requireAuthConfigured, requireSession } from "./middleware/auth.js";
 import { allow } from "./auth/permissions.js";
 import { onlyFields } from "./lib/requests.js";
 import { requestId } from "./middleware/requestId.js";
-import { createOwnerTokenProvider, createCompositeProvider } from "./auth/providers.js";
+import { createOwnerTokenProvider } from "./auth/providers.js";
 import { createInviteService } from "./auth/invites.js";
 import { createSessionStore } from "./auth/sessions.js";
 import { createSessionHandler, authRoutes } from "./routes/auth.js";
@@ -51,7 +51,7 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
   const publishing = { gate: createPublishingGate({ env, publishers: publishers || defaultPublishers(env) }), faults: publishFaults || null, now: publishClock || (() => new Date()) };
   const sessionStore = sessions || createSessionStore(prisma);
   const invites = createInviteService(prisma);
-  const provider = authProvider || createCompositeProvider(createOwnerTokenProvider(env), invites, env);
+  const provider = authProvider || createOwnerTokenProvider(env);
   const audit = createAuditLog(prisma);
 
   // One gate per app, injected into every route via req.generationGate.
@@ -113,7 +113,7 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
   api.post(
     "/auth/session",
     rateLimit({ windowMs: 60_000, max: Number(env.AUTH_RATE_LIMIT_PER_MIN) || 10, keyFn: (req) => `auth:${req.ip}` }),
-    createSessionHandler({ env, provider, sessions: sessionStore })
+    createSessionHandler({ env, provider, sessions: sessionStore, invites })
   );
   api.use(requireSession({ env, sessions: sessionStore }));
   // Authorization is declared on each route (secureRouter / allow), not here.
