@@ -26,12 +26,14 @@ const hours = (a, b) => Math.round((new Date(b) - new Date(a)) / 36e5);
 function RecordForm({ subjects, onDone }) {
   const [f, setF] = useState({ subject: "", metric: "views", kind: "cumulative", value: "", observedAt: "", periodStart: "", periodEnd: "", source: "manual", sourceDetail: "", platform: "Instagram" });
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const [type, id] = f.subject.split(":");
   const metrics = subjects?.metrics?.[type] || [];
   const toIso = (local) => (local ? new Date(local).toISOString() : undefined); // browser-local -> UTC
   const submit = async () => {
-    setError("");
+    if (busy) return;
+    setError(""); setBusy(true);
     try {
       await api.metrics.record({
         subjectType: type, subjectId: id, ...(type === "account" ? { platform: f.platform } : {}),
@@ -42,6 +44,7 @@ function RecordForm({ subjects, onDone }) {
       set("value", "");
       onDone("Reading recorded");
     } catch (e) { setError(e.details?.fields ? Object.entries(e.details.fields).map(([k, v]) => `${k} ${v}`).join("; ") : e.message); }
+    finally { setBusy(false); } // entered values are kept on failure
   };
   return (
     <div role="group" aria-label="Record a reading" className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -87,7 +90,7 @@ function RecordForm({ subjects, onDone }) {
         <input className={input} value={f.sourceDetail} onChange={(e) => set("sourceDetail", e.target.value)} placeholder="e.g. Instagram Insights, post screen" />
       </label>
       {error && <div className="text-[11px] text-red-400 sm:col-span-3" role="alert">{error}</div>}
-      <div><button className={btn} disabled={!f.subject} onClick={submit}>Record reading</button></div>
+      <div><button className={btn} disabled={!f.subject || busy} aria-busy={busy} onClick={submit}>{busy ? "Recording…" : "Record reading"}</button></div>
     </div>
   );
 }

@@ -71,10 +71,23 @@ export async function recordReceipt(prisma, campaignId, body, { by, now = new Da
     if (inv.currency !== body.currency) throw invalid({ currency: `must match the invoice currency (${inv.currency})` });
     invoiceId = inv.id;
   }
-  return prisma.campaignReceipt.create({ data: {
-    campaignId, invoiceId, amountMicros: BigInt(micros), currency: body.currency, receivedAt,
-    reference: body.reference.trim(), evidence: body.evidence.trim(), recordedBy: by,
-  } });
+  // One active receipt per payment reference per campaign. Serialised with a
+  // transaction advisory lock on (campaign, reference), so simultaneous
+  // submissions (a double click) cannot both record the payment and overstate
+  // income. A reversed receipt does not count, so a correction can be
+  // re-recorded. Test: "the same payment cannot be recorded twice".
+  const reference = body.reference.trim();
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtextextended(${`receipt|${campaignId}|${reference}`}, 0))`;
+    const existing = await tx.campaignReceipt.findFirst({ where: { campaignId, reference, reversedAt: null } });
+    if (existing) {
+      throw new ApiError("DUPLICATE_RECEIPT", 409, "A payment with this reference is already recorded for this campaign; reverse it first if it was wrong", { existingId: existing.id });
+    }
+    return tx.campaignReceipt.create({ data: {
+      campaignId, invoiceId, amountMicros: BigInt(micros), currency: body.currency, receivedAt,
+      reference, evidence: body.evidence.trim(), recordedBy: by,
+    } });
+  });
 }
 
 export async function reverseReceipt(prisma, campaignId, receiptId, reason, { by }) {

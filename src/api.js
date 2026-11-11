@@ -116,7 +116,12 @@ export function createApiClient({
     }
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }));
-      const e = new Error(err.error || `API error ${res.status}`);
+      // A refusal names the missing permission, so the user knows it is about
+      // their role and not a fault (the server's check is what protects).
+      const missing = err.code === "FORBIDDEN" && Array.isArray(err.details?.missing) ? err.details.missing : null;
+      const e = new Error(missing?.length
+        ? `Your role cannot do this: it needs the ${missing.join(" and ")} permission.`
+        : err.error || `API error ${res.status}`);
       e.code = err.code;
       e.status = res.status;
       e.details = err.details;
@@ -162,6 +167,11 @@ export const characterImages = {
 export const system = {
   operations: () => request("/api/system/operations"),
   setGenerationPause: (paused, reason) => request("/api/system/generation-switch", { method: "POST", body: JSON.stringify({ paused, reason }) }),
+};
+
+// ─── Signed-in identity ───────────────────────────────────
+export const auth = {
+  me: () => request("/api/auth/me"),
 };
 
 // ─── Team access: owner-issued editor/reviewer invites ────

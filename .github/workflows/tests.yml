@@ -114,6 +114,8 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm ci
         working-directory: backend
+      - name: Install ffmpeg (assembled H.264 playback check)
+        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
       - name: Install Playwright + Chromium
         run: |
           npm install --no-save --ignore-scripts playwright@1.63.0

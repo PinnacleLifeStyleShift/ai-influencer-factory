@@ -30,13 +30,18 @@ export default function CampaignMoney({ campaignId, currency = "USD", onChanged 
   const [inv, setInv] = useState({ number: "", amount: "", currency, issuedAt: today(), dueAt: "" });
   const [rec, setRec] = useState({ invoiceId: "", amount: "", currency, receivedAt: today(), reference: "", evidence: "" });
   const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
   const load = useCallback(async () => setData(await api.campaignMoney.get(campaignId)), [campaignId]);
   useEffect(() => { load().catch((e) => setMessage(e.message)); }, [load]);
+  // One money write at a time from this panel; the server also refuses a
+  // second receipt for the same payment (DUPLICATE_RECEIPT) and duplicate
+  // invoice numbers, so a double click cannot double-count.
   const act = async (fn, done, after) => {
-    setMessage("");
+    if (busy) return;
+    setMessage(""); setBusy(true);
     try { await fn(); after?.(); setMessage(done); await load(); onChanged?.(); } catch (e) {
       setMessage(e.details?.fields ? Object.entries(e.details.fields).map(([k, v]) => `${k} ${v}`).join("; ") : e.message);
-    }
+    } finally { setBusy(false); }
   };
   if (!data) return <div className="text-xs text-zinc-500">{message || "Loading…"}</div>;
   const live = data.invoices.filter((i) => !i.voidedAt);
@@ -58,7 +63,7 @@ export default function CampaignMoney({ campaignId, currency = "USD", onChanged 
             <label className={label}>Currency<input className={input} value={inv.currency} onChange={(e) => setInv({ ...inv, currency: e.target.value.toUpperCase() })} /></label>
             <label className={label}>Issued<input type="date" className={input} value={inv.issuedAt} onChange={(e) => setInv({ ...inv, issuedAt: e.target.value })} /></label>
           </div>
-          <button className={`${ghost} mt-2`} onClick={() => act(() => api.campaignMoney.addInvoice(campaignId, { ...inv, dueAt: inv.dueAt || undefined }), "Invoice recorded", () => setInv({ ...inv, number: "", amount: "", dueAt: "" }))}>Record invoice</button>
+          <button className={`${ghost} mt-2`} disabled={busy} aria-busy={busy} onClick={() => act(() => api.campaignMoney.addInvoice(campaignId, { ...inv, dueAt: inv.dueAt || undefined }), "Invoice recorded", () => setInv({ ...inv, number: "", amount: "", dueAt: "" }))}>Record invoice</button>
         </div>
         <div>
           <div className="text-zinc-400 font-semibold mb-1">Money received</div>
@@ -80,7 +85,7 @@ export default function CampaignMoney({ campaignId, currency = "USD", onChanged 
             <label className={label}>Payment reference<input className={input} value={rec.reference} onChange={(e) => setRec({ ...rec, reference: e.target.value })} /></label>
             <label className={label}>Evidence<input className={input} value={rec.evidence} onChange={(e) => setRec({ ...rec, evidence: e.target.value })} placeholder="e.g. bank statement line, date" /></label>
           </div>
-          <button className={`${ghost} mt-2`} onClick={() => act(() => api.campaignMoney.addReceipt(campaignId, { ...rec, invoiceId: rec.invoiceId || undefined }), "Receipt recorded", () => setRec({ ...rec, amount: "", reference: "", evidence: "" }))}>Record money received</button>
+          <button className={`${ghost} mt-2`} disabled={busy} aria-busy={busy} onClick={() => act(() => api.campaignMoney.addReceipt(campaignId, { ...rec, invoiceId: rec.invoiceId || undefined }), "Receipt recorded", () => setRec({ ...rec, amount: "", reference: "", evidence: "" }))}>Record money received</button>
         </div>
       </div>
       {message && <div className="mt-2 text-zinc-300" role="status">{message}</div>}

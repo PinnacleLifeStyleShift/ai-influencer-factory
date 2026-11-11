@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
 import * as api from "./api.js";
+import { visibleNav } from "./roles.js";
 import CharacterBible from "./CharacterBible.jsx";
 import GenerationJobs from "./GenerationJobs.jsx";
 import Measurement from "./Measurement.jsx";
@@ -838,7 +839,7 @@ const NAV = [
   { id:"calendar", icon:CalendarDays, label:"Content Calendar" },
   { id:"campaigns", icon:Megaphone, label:"Campaigns" },
   { id:"measurement", icon:TrendingUp, label:"Measurement" },
-  { id:"operations", icon:Eye, label:"Operations" },
+  { id:"operations", icon:Eye, label:"Operations", needs:"admin" },
 ];
 
 export default function App() {
@@ -847,6 +848,8 @@ export default function App() {
   const [content, setContent] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [me, setMe] = useState(null);
+  useEffect(() => { api.auth.me().then((r) => setMe(r.principal)).catch(() => setMe(null)); }, []);
 
   // Fetch all data from API on mount
   useEffect(() => {
@@ -929,8 +932,8 @@ export default function App() {
             </div>
           </div>
           <nav aria-label="Main" className="app-nav" style={{ flex:1, padding:"12px 10px", display:"flex", flexDirection:"column", gap:2 }}>
-            {NAV.map(({id,icon:Icon,label})=>(
-              <button key={id} onClick={()=>setPage(id)} style={{
+            {visibleNav(NAV, me?.role).map(({id,icon:Icon,label})=>(
+              <button key={id} onClick={()=>setPage(id)} aria-current={page===id?"page":undefined} style={{
                 display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:10, border:"none",
                 background:page===id?"#C8FF00":"transparent", color:page===id?"#09090f":"#71717a",
                 fontFamily:"'DM Sans', sans-serif", fontSize:13, fontWeight:page===id?600:400, cursor:"pointer",
@@ -942,8 +945,9 @@ export default function App() {
             ))}
           </nav>
           <div className="app-aside-footer" style={{ padding:"16px 20px", borderTop:"1px solid #1e1e2a" }}>
-            <div style={{ fontSize:11, color:"#3f3f50" }}>Powered by Higgsfield AI</div>
-            <a href="https://higgsfield.ai" target="_blank" rel="noreferrer" style={{ fontSize:11, color:"#C8FF00", textDecoration:"none" }}>Open Studio →</a>
+            {/* Truthful footer: who is signed in. No provider is claimed here;
+                live generation is a separate, owner-approved capability. */}
+            <div style={{ fontSize:12, color:"#a1a1aa" }} aria-live="polite">{me ? `Signed in as ${me.role}` : "Not signed in"}</div>
           </div>
         </aside>
 

@@ -247,3 +247,22 @@ test("calendar content no longer takes bare view/like counters", opts, () => wit
   const c = await prisma.content.create({ data: { title: "t", characterId: character.id } });
   assert.equal((await call(app, `/api/content/${c.id}`, { method: "PUT", body: { views: 1000 } })).body.code, "METRICS_USE_READINGS");
 }));
+
+// Spec 11 Nov: "Disable duplicate submission with server enforcement, not only
+// a spinner." A double click must not record the same payment twice (income
+// would be overstated); a reversed receipt can be recorded again as a correction.
+test("the same payment cannot be recorded twice, even by simultaneous requests", opts, () => withApp(async (app) => {
+  const camp = await prisma.campaign.create({ data: { name: "Synthetic Sponsor", payoutAmount: "500", currency: "USD" } });
+  const body = { amount: "100", currency: "USD", receivedAt: "2026-11-05", reference: "BANK-77", evidence: "Bank statement line 2026-11-05" };
+  const rec = () => call(app, `/api/campaigns/${camp.id}/receipts`, { method: "POST", body });
+  const results = await Promise.all([rec(), rec(), rec()]);
+  assert.deepEqual(results.map((r) => r.status).sort(), [201, 409, 409], JSON.stringify(results.map((r) => r.body)));
+  assert.ok(results.filter((r) => r.status === 409).every((r) => r.body.code === "DUPLICATE_RECEIPT"));
+  assert.equal(await prisma.campaignReceipt.count({ where: { campaignId: camp.id } }), 1);
+  const money = (await call(app, `/api/campaigns/${camp.id}/money`)).body;
+  assert.equal(money.summary.USD.receivedMicros, 100e6, "received once");
+
+  const first = results.find((r) => r.status === 201).body;
+  await call(app, `/api/campaigns/${camp.id}/receipts/${first.id}/reverse`, { method: "POST", body: { reason: "Recorded with the wrong date" } });
+  assert.equal((await rec()).status, 201, "after a reversal the payment can be recorded again");
+}));

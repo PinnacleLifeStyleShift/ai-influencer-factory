@@ -1,5 +1,7 @@
 # Current baseline
 
+> **Historical record.** For current status, read `docs/status/spec-2026-11-11.md`, the maintained matrix. On 11 November 2026 Railway showed both services serving `25a0eab` (PR #21). Statements below about "not merged", merge order or the serving revision describe the time they were written.
+
 Recorded 2026-11-09. Updated for branch `pkg-h-operational-hardening` (stacked on `pkg-g-measurement` → `pkg-f-publishing-interfaces` → `pkg-e-review-calendar-export` → `pkg-d-durable-jobs` → `pkg-c-content-packages` → `pkg-b-character-bible` → `pkg-a-identity-baseline` → PR #1).
 No secret values appear here; Railway variables are listed by name only.
 

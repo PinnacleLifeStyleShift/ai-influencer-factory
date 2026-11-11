@@ -18,10 +18,11 @@ export function sessionTtlMs(env) {
 
 export function createSessionStore(prisma, { now = () => new Date() } = {}) {
   return {
-    async create(principal, { provider, ttlMs }) {
+    /** `client` lets a caller create the session inside its own transaction. */
+    async create(principal, { provider, ttlMs, client = prisma }) {
       const token = `ses_${crypto.randomBytes(32).toString("base64url")}`;
       const at = now();
-      const session = await prisma.session.create({
+      const session = await client.session.create({
         data: {
           tokenHash: hashToken(token),
           principalId: principal.id,
@@ -41,6 +42,14 @@ export function createSessionStore(prisma, { now = () => new Date() } = {}) {
       if (!session) return { session: null, status: "unknown" };
       if (session.revokedAt) return { session, status: "revoked" };
       if (session.expiresAt.getTime() <= now().getTime()) return { session, status: "expired" };
+      // An invite-based session is only as valid as its invite (review IF-CR01):
+      // revoking the invite ends the session even if the two raced. Weakening
+      // this lets a revoked editor/reviewer keep access
+      // (db-invite-revocation-race, first test).
+      if (session.authProvider === "role-invite" && session.principalId.startsWith("invite:")) {
+        const invite = await prisma.roleInvite.findUnique({ where: { id: session.principalId.slice("invite:".length) } });
+        if (!invite || invite.revokedAt) return { session, status: "revoked" };
+      }
       return { session, status: "active" };
     },
 

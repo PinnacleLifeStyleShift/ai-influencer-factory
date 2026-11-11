@@ -363,6 +363,10 @@ model GenerationApplication {
   promptHash         String? @map("prompt_hash")
   referencesSent     String[] @default([]) @map("references_sent")
   conditioning       String  @default("none")
+  // Paid inputs this result was made from, by their reservation (e.g. the
+  // still a shot video was animated from). Export follows them for rights and
+  // cost. Empty for rows written before 11 November 2026.
+  inputReservationIds String[] @default([]) @map("input_reservation_ids")
 
   @@index([pipelineItemId])
   @@map("generation_applications")

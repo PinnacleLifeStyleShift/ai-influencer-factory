@@ -84,6 +84,8 @@ Spec of 11 November 2026, priority step 5. Each capability below is **off in pro
 
 **Configuration:** `ROLE_INVITES=enabled`.
 
+**Prerequisite:** met. The revocation race found in review (IF-CR01) is fixed: enrollment is atomic with revocation, and session lookup re-checks the invite (`db-invite-revocation-race`).
+
 **Resources:** none beyond the existing database.
 
 **Rollback:** unset it. New invites are refused, existing sessions keep working until they expire, and Revoke still works.

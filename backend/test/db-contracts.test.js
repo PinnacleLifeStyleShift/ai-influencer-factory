@@ -98,3 +98,31 @@ test("retention is an owner decision: unset or invalid means nothing is deleted"
   assert.ok(Object.values(bad).every((r) => r.retainDays === null));
   assert.ok(configFindings({ RETENTION_POLICY: "{oops" }).some((f) => f.setting.startsWith("RETENTION_POLICY") && f.level === "warning"));
 });
+
+// Review IF-CR03: assembly makes silent video without burned-in captions, so
+// the private export carries the approved caption, hashtags and disclosure as
+// their own file, taken from the immutable manifest (not the live item).
+test("the caption and disclosure file comes from the approved snapshot, even after later edits", opts, () => withApp(async (call) => {
+  const raw = await videoItem();
+  const it = (await call(`/api/pipeline/${raw.id}`)).body;
+  await call(`/api/pipeline/${raw.id}/approve`, "POST", { revision: it.revision, snapshotHash: it.snapshotHash });
+  const exp = (await call(`/api/pipeline/${raw.id}/exports`, "POST")).body.export;
+  await prisma.pipelineItem.update({ where: { id: raw.id }, data: { caption: "Edited after export", stage: "review", approvedHash: null, approvedRevision: null } });
+
+  const app = await startApp({ env: { OWNER_API_TOKEN: TOKEN }, prisma, mediaStore: createFixtureMediaStore(mediaDir) });
+  try {
+    const r = await app.call(`/api/pipeline/${raw.id}/exports/${exp.id}/download?format=captions`, { token: TOKEN });
+    assert.equal(r.status, 200);
+    assert.match(r.headers.get("content-disposition"), /captions\.txt"/);
+    assert.equal(r.headers.get("x-export-current"), "false", "says the item has changed since");
+    const text = await r.text();
+    assert.ok(text.includes(exp.manifest.caption) && !text.includes("Edited after export"), "the approved caption, not the edit");
+    assert.ok(text.includes(exp.manifest.disclosure));
+    assert.ok(text.includes(exp.manifest.hashtags));
+    assert.match(text, /not burned into the video/);
+    const sha = (await import("node:crypto")).createHash("sha256").update(text).digest("hex");
+    assert.equal(r.headers.get("x-content-sha256"), sha, "checksum of exactly what was sent");
+    const again = await (await app.call(`/api/pipeline/${raw.id}/exports/${exp.id}/download?format=captions`, { token: TOKEN })).text();
+    assert.equal(again, text, "repeatable");
+  } finally { await app.close(); }
+}));

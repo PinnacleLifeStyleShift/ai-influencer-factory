@@ -87,7 +87,9 @@ try {
 
   // Two-role sign-in: the owner issues a reviewer invite in Team access; a
   // separate browser signs in with the code once and gets reviewer rights.
+  await page.getByText("Signed in as owner").waitFor();
   await page.getByRole("button", { name: "Operations" }).first().click();
+  assert.equal(await page.getByRole("button", { name: "Operations" }).first().getAttribute("aria-current"), "page");
   const team = page.getByLabel("Team access");
   await team.getByLabel("Who it is for").fill("Synthetic reviewer");
   await team.getByRole("button", { name: "Create invite" }).click();
@@ -114,14 +116,17 @@ try {
   const rToken = await rp.evaluate(() => sessionStorage.getItem("aif.session"));
   const me = await (await fetch(`${API}/api/auth/me`, { headers: { Authorization: `Bearer ${rToken}` } })).json();
   assert.equal(me.principal.role, "reviewer");
-  const denied = rp.waitForResponse((r) => r.url().endsWith("/api/system/operations"));
-  await rp.getByRole("button", { name: "Operations" }).first().click();
-  assert.equal((await denied).status(), 403, "a reviewer cannot open owner operations");
+  await rp.getByText("Signed in as reviewer").waitFor();
+  assert.equal(await rp.getByRole("navigation", { name: "Main" }).getByRole("button", { name: "Operations" }).count(), 0, "owner-only navigation is hidden");
+  // Hiding is a courtesy; the server still refuses the reviewer directly.
+  const denied = await fetch(`${API}/api/system/operations`, { headers: { Authorization: `Bearer ${rToken}` } });
+  assert.equal(denied.status, 403, "a reviewer cannot open owner operations");
+  assert.deepEqual((await denied.json()).details.missing, ["admin"]);
   const again = await fetch(`${API}/api/auth/session`, { method: "POST", headers: { Authorization: `Bearer ${code}` } });
   assert.equal(again.status, 401, "the code works once");
   await reviewer.close();
 
-  console.log(`UI auth e2e passed: ${apiRequests.length} API requests, ${dialogs.length} prompt, external requests blocked: ${external.length}; two-role sign-in (owner issues reviewer invite, reviewer signs in once, owner operations denied)`);
+  console.log(`UI auth e2e passed: ${apiRequests.length} API requests, ${dialogs.length} prompt, external requests blocked: ${external.length}; two-role sign-in (owner issues reviewer invite, reviewer signs in once, owner-only navigation hidden, server refuses with the missing permission)`);
   await browser.close();
 } finally {
   for (const p of procs) { try { process.kill(-p.pid, "SIGTERM"); } catch { /* gone */ } }
