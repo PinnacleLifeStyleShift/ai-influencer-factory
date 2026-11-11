@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createPrismaLedger } from "../src/services/spendLedger.js";
 import { createGenerationGate, selectLedger } from "../src/services/generationGate.js";
 import { skipReason, newClient, resetDb } from "./db-helpers.js";
+import { interceptExternalFetch } from "./helpers.js";
 
 const opts = { skip: skipReason };
 const PRICE = 1_000_000;
@@ -10,8 +11,9 @@ const CAPS = { perJobMicros: 2 * PRICE, dailyMicros: 5 * PRICE, monthlyMicros: 1
 const entry = (extra = {}) => ({ amountMicros: PRICE, provider: "higgsfield", model: "soul", ...extra });
 
 let a; let b;
-before(async () => { if (skipReason) return; a = newClient(); b = newClient(); });
-after(async () => { await a?.$disconnect(); await b?.$disconnect(); });
+let net;
+before(async () => { net = interceptExternalFetch(); if (skipReason) return; a = newClient(); b = newClient(); });
+after(async () => { net.restore(); assert.equal(net.calls.length, 0, "no outbound calls"); await a?.$disconnect(); await b?.$disconnect(); });
 beforeEach(async () => { if (!skipReason) await resetDb(a); });
 
 test("caps hold across two independent clients (separate connection pools)", opts, async () => {

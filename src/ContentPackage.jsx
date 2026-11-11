@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import * as api from "./api.js";
 import ReviewExport from "./ReviewExport.jsx";
 import Publishing from "./Publishing.jsx";
@@ -39,6 +39,22 @@ export default function ContentPackage({ itemId, onClose, onChanged }) {
     setDraft(p.script ? { ...p.script, evidence: p.script.evidence || [] } : null);
   }, [itemId]);
   useEffect(() => { load().catch((e) => setMessage(e.message)); }, [load]);
+  // Focus moves into the panel when it opens, so keyboard and screen-reader
+  // users land on what they opened; Escape closes it (focus then returns).
+  const panelRef = useRef(null);
+  const focusedOnce = useRef(false);
+  useEffect(() => { if (pkg && !focusedOnce.current && panelRef.current) { focusedOnce.current = true; panelRef.current.focus(); } });
+  // Escape closes the panel even after an action removed the focused control
+  // (e.g. the Approve button disappears once approved). Not while typing in a field.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return;
+      onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   const act = async (fn, done) => {
     setBusy(true); setMessage("");
@@ -71,7 +87,7 @@ export default function ContentPackage({ itemId, onClose, onChanged }) {
     `Clip for shot ${index + 1} generated`);
 
   return (
-    <section className={card} aria-label="Content package">
+    <section className={card} aria-label="Content package" ref={panelRef} tabIndex={-1}>
       <div className="flex items-center justify-between mb-3">
         <div>
           <div className="text-sm text-zinc-100 font-semibold">Content package · {item.character?.name}</div>

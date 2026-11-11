@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import * as api from "./api.js";
 import ContentPackage from "./ContentPackage.jsx";
 import {
@@ -63,6 +63,7 @@ export default function PipelinePage({ characters }) {
   const [activeStep, setActiveStep] = useState("trends");
   const [stageFilter, setStageFilter] = useState("all");
   const [selectedItem, setSelectedItem] = useState(null);
+  const openerRef = useRef(null);
   const [packageId, setPackageId] = useState(null);
   const [ideaTopic, setIdeaTopic] = useState("");
   const [busy, setBusy] = useState(false);
@@ -304,7 +305,19 @@ export default function PipelinePage({ characters }) {
       </div>
 
       {actionError && !selectedItem && <div className="text-xs text-red-400 mb-3" role="alert">{actionError}</div>}
-      {packageId && <ContentPackage itemId={packageId} onClose={() => setPackageId(null)} onChanged={load} />}
+      {packageId && <ContentPackage itemId={packageId} onChanged={load} onClose={() => {
+        setPackageId(null);
+        // Focus returns to the control that opened the panel (keyboard users keep their place).
+        // The list may have re-rendered (e.g. after approving), so fall back to
+        // the same item's opener or card, found by its id.
+        const opener = openerRef.current; const id = packageId;
+        setTimeout(() => {
+          const target = (opener?.isConnected && opener)
+            || document.querySelector(`[data-package-opener="${id}"]`)
+            || document.querySelector(`[data-item-card="${id}"]`);
+          target?.focus();
+        }, 50);
+      }} />}
 
       <div className="grid grid-cols-12 gap-6">
         {/* ─── LEFT: Wizard Panel ─────────────────────── */}
@@ -609,6 +622,14 @@ export default function PipelinePage({ characters }) {
                 const stage = STAGE_CONFIG[item.stage] || STAGE_CONFIG.draft;
                 return (
                   <div key={item.id} onClick={() => setSelectedItem(selectedItem?.id === item.id ? null : item)}
+                    role="button" tabIndex={0} aria-expanded={selectedItem?.id === item.id} data-item-card={item.id}
+                    aria-label={`${item.character?.name || "Item"}: ${(STAGE_CONFIG[item.stage] || STAGE_CONFIG.draft).label}`}
+                    onKeyDown={(e) => {
+                      // Keyboard operation of the card; keys pressed on controls inside it are theirs.
+                      if (e.target !== e.currentTarget || !["Enter", " "].includes(e.key)) return;
+                      e.preventDefault();
+                      setSelectedItem(selectedItem?.id === item.id ? null : item);
+                    }}
                     className={`p-4 cursor-pointer transition-all hover:bg-[#1a1a24] ${selectedItem?.id === item.id ? "bg-[#1a1a24]" : ""}`}>
                     <div className="flex items-start justify-between">
                       <div className="flex-1">
@@ -635,7 +656,7 @@ export default function PipelinePage({ characters }) {
 
                     {/* Expanded Detail */}
                     {selectedItem?.id === item.id && item.scriptVersionId && (
-                      <button onClick={(e) => { e.stopPropagation(); setPackageId(item.id); window.scrollTo(0, 0); }}
+                      <button data-package-opener={item.id} onClick={(e) => { e.stopPropagation(); openerRef.current = e.currentTarget; setPackageId(item.id); window.scrollTo(0, 0); }}
                         className="mt-2 text-xs text-[#C8FF00] hover:underline">Open content package</button>
                     )}
                     {selectedItem?.id === item.id && (

@@ -166,6 +166,7 @@ export const characterImages = {
 // ─── Operations (owner) ───────────────────────────────────
 export const system = {
   operations: () => request("/api/system/operations"),
+  capabilities: () => request("/api/system/capabilities"),
   setGenerationPause: (paused, reason) => request("/api/system/generation-switch", { method: "POST", body: JSON.stringify({ paused, reason }) }),
 };
 
