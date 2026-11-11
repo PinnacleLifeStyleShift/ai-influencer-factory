@@ -70,7 +70,7 @@ export default function Operations() {
         {view.rows.length === 0 ? <div className="text-xs text-zinc-500">Nothing open.</div> : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[760px] text-[11px] text-zinc-300">
-              <thead><tr className="text-left text-zinc-500"><th>What</th><th>Package</th><th>Age</th><th>Last safe state</th><th>Next permitted action</th><th>Money</th></tr></thead>
+              <thead><tr className="text-left text-zinc-500"><th>What</th><th>Package</th><th>Age</th><th>Last safe state</th><th>Next permitted action</th><th>Owner</th><th>Money</th></tr></thead>
               <tbody>{view.rows.map((r) => (
                 <tr key={`${r.type}-${r.id}`} className="align-top border-t border-[#2a2a3a]">
                   <td>{r.type.replaceAll("_", " ")}{r.platform ? ` · ${r.platform}` : ""}{r.provider ? ` · ${r.provider}` : ""}</td>
@@ -78,6 +78,7 @@ export default function Operations() {
                   <td>{age(r.ageSec)}</td>
                   <td>{r.lastSafeState}</td>
                   <td>{r.nextAction}</td>
+                  <td>{r.evidenceOwner || "owner"}</td>
                   <td>{r.money ? `${money(r.money.reservedMicros, r.money.currency)} (${r.money.state.replaceAll("_", " ")})` : "—"}</td>
                 </tr>
               ))}</tbody>
@@ -85,6 +86,7 @@ export default function Operations() {
           </div>
         )}
       </section>
+      <Capabilities />
       <TeamAccess />
       {message && <div className="text-xs text-zinc-300" role="status">{message}</div>}
     </div>
@@ -158,6 +160,43 @@ function TeamAccess() {
         </div>
       )}
       {status && <div className="text-[11px] text-zinc-300 mt-2" role="status">{status}</div>}
+    </section>
+  );
+}
+
+/**
+ * What is built, configured, switched on and verified, per live capability.
+ * A green build or a configured key is not "live"; this says which is which.
+ * The server sends setting names only, never values.
+ */
+function Capabilities() {
+  const [caps, setCaps] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => { api.system.capabilities().then((r) => setCaps(r.capabilities)).catch((e) => setError(e.message)); }, []);
+  const yes = (v, on, off) => <span className={v ? "text-green-400" : "text-zinc-400"}>{v ? `✓ ${on}` : `✗ ${off}`}</span>;
+  return (
+    <section className={card} aria-label="Capabilities">
+      <h2 className="text-sm text-zinc-200 mb-1">Capabilities</h2>
+      <p className="text-[11px] text-zinc-500 mb-3">Built is not configured, configured is not switched on, and switched on is not verified with a real provider.</p>
+      {error && <div className="text-[11px] text-zinc-300" role="status">{error}</div>}
+      {!caps && !error && <div className="text-[11px] text-zinc-500">Loading…</div>}
+      {caps && (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[760px] text-[11px] text-zinc-300" aria-label="Capability states">
+            <thead><tr className="text-left text-zinc-500"><th>Capability</th><th>Built</th><th>Configured</th><th>Switched on</th><th>Verified by</th><th>Needs</th></tr></thead>
+            <tbody>{caps.map((c) => (
+              <tr key={c.key} className="align-top border-t border-[#2a2a3a]">
+                <td className="pr-2">{c.label}</td>
+                <td className="pr-2">{c.built}</td>
+                <td className="pr-2">{yes(c.configured, "yes", `missing ${c.missing.join(", ")}`)}</td>
+                <td className="pr-2">{yes(c.enabled, "on", "off")}</td>
+                <td className="pr-2">{c.verifiedBy}</td>
+                <td>{c.needs}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
     </section>
   );
 }

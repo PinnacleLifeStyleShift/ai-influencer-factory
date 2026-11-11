@@ -90,6 +90,11 @@ try {
   await page.getByText("Signed in as owner").waitFor();
   await page.getByRole("button", { name: "Operations" }).first().click();
   assert.equal(await page.getByRole("button", { name: "Operations" }).first().getAttribute("aria-current"), "page");
+  // Capability panel: every live capability shown as off, with what it needs.
+  const caps = page.getByRole("table", { name: "Capability states" });
+  await caps.getByText("Paid image and video generation").waitFor();
+  assert.equal(await caps.getByText("✓ on").count(), 1, "only invites are switched on in this test server");
+  await page.getByLabel("Capabilities").screenshot({ path: path.join(root, "docs/screenshots/spec-1111-capabilities.png") });
   const team = page.getByLabel("Team access");
   await team.getByLabel("Who it is for").fill("Synthetic reviewer");
   await team.getByRole("button", { name: "Create invite" }).click();

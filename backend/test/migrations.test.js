@@ -1,8 +1,14 @@
-import { test } from "node:test";
+import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createPrismaClient } from "../src/lib/prisma.js";
 import { skipReason, TEST_DB_URL } from "./db-helpers.js";
+import { interceptExternalFetch } from "./helpers.js";
+
+// In-process network guard (the prisma CLI children talk only to the local database).
+let net;
+before(() => { net = interceptExternalFetch(); });
+after(() => { net.restore(); assert.equal(net.calls.length, 0, "no outbound calls"); });
 
 /**
  * Migration path checks on the disposable local Postgres, each in its own

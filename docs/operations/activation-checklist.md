@@ -1,12 +1,13 @@
 # Activation checklist (prepared, not executed)
 
-Spec of 11 November 2026, priority step 5. Each capability below is **off in production** and stays off until the owner approves its own section. Approving one does not approve another. Every switch is an environment variable on the Railway **api** service, so turning it off again is the same change reversed, and no migration depends on any of them.
+Spec of 11 November 2026, priority step 5. The **Capabilities** panel on the Operations screen (`GET /api/system/capabilities`) shows each one live: built, configured, switched on, and verified by. Each capability below is **off in production** and stays off until the owner approves its own section. Approving one does not approve another. Every switch is an environment variable on the Railway **api** service, so turning it off again is the same change reversed, and no migration depends on any of them.
 
 **Costs:** none are estimated here, because there is no billing evidence. Each section names what must be priced from the provider's or Railway's own pricing page before approval.
 
 **Before any activation:**
 - take a database backup of the **Postgres** service (the one the API uses, by its `postgres` private endpoint);
-- note the current `main` revision.
+- note the current `main` revision;
+- confirm the rollback target with `backend/scripts/with-test-postgres.sh backend/scripts/rehearse-fallback.sh <current-commit>` (rehearsed for `25a0eab` and `c61af55`).
 
 ---
 

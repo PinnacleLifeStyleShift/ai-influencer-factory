@@ -21,6 +21,7 @@ import { onlyFields } from "./lib/requests.js";
 import { requestId } from "./middleware/requestId.js";
 import { createOwnerTokenProvider } from "./auth/providers.js";
 import { createInviteService } from "./auth/invites.js";
+import { capabilityMap } from "./services/capabilities.js";
 import { createSessionStore } from "./auth/sessions.js";
 import { createSessionHandler, authRoutes } from "./routes/auth.js";
 import { createAuditLog } from "./services/audit.js";
@@ -154,6 +155,8 @@ export function createApp({ prisma, env = process.env, gate, logRequests = true,
   // Read-only view of what the spending gate would allow (no secrets).
   // Configuration audit by setting NAME only (admin via the permission table).
   api.get("/system/config-check", allow(["admin"]), (_req, res) => res.json({ findings: configFindings(env) }));
+  // Built / configured / on / verified per live capability; names only, never values.
+  api.get("/system/capabilities", allow(["admin"]), (_req, res) => res.json({ capabilities: capabilityMap(env) }));
   // Operations: open obligations and the runtime generation switch (owner).
   api.get("/system/operations", allow(["admin"]), async (_req, res, next) => {
     try { res.json(await operationsView(prisma)); } catch (err) { next(err); }

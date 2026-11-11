@@ -913,7 +913,6 @@ export default function App() {
           .app-aside .app-brand { padding: 10px 16px !important; }
           .app-aside .app-nav { flex-direction: row !important; overflow-x: auto; padding: 6px 10px !important; }
           .app-aside .app-nav button { white-space: nowrap; flex-shrink: 0; }
-          .app-aside .app-aside-footer { display: none; }
           .app-main { min-height: 0; }
         }
       `}</style>
@@ -929,6 +928,8 @@ export default function App() {
                 <div style={{ fontFamily:"'Bebas Neue', sans-serif", fontSize:16, letterSpacing:"0.1em", lineHeight:1, color:"#f4f4f5" }}>INFLUENCER</div>
                 <div style={{ fontFamily:"'Bebas Neue', sans-serif", fontSize:16, letterSpacing:"0.1em", lineHeight:1, color:"#C8FF00" }}>FACTORY</div>
               </div>
+              {/* Who is signed in, visible at every width (the footer is hidden on phones). */}
+              <div style={{ marginLeft:"auto", fontSize:11, color:"#a1a1aa" }} aria-live="polite">{me ? `Signed in as ${me.role}` : "Not signed in"}</div>
             </div>
           </div>
           <nav aria-label="Main" className="app-nav" style={{ flex:1, padding:"12px 10px", display:"flex", flexDirection:"column", gap:2 }}>
@@ -944,11 +945,7 @@ export default function App() {
               </button>
             ))}
           </nav>
-          <div className="app-aside-footer" style={{ padding:"16px 20px", borderTop:"1px solid #1e1e2a" }}>
-            {/* Truthful footer: who is signed in. No provider is claimed here;
-                live generation is a separate, owner-approved capability. */}
-            <div style={{ fontSize:12, color:"#a1a1aa" }} aria-live="polite">{me ? `Signed in as ${me.role}` : "Not signed in"}</div>
-          </div>
+
         </aside>
 
         {/* Main */}
