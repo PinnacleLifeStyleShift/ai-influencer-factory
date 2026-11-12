@@ -45,15 +45,44 @@ const clientRefFor = (deliveryId, attempt) => crypto.createHash("sha256").update
 const safePermalink = (u) => (typeof u === "string" && checkExternalUrl(u).ok ? u : null);
 
 /** What is sent: only the approved snapshot, with the disclosure in the text. */
-export function buildPayload(item, exportRecord, platform) {
+export function buildPayload(item, exportRecord, platform, verified = null) {
   const type = mediaTypeOf(item);
   const file = exportRecord.manifest.media.find((m) => m.role === type) || exportRecord.manifest.media[0];
   const text = [item.caption, item.disclosure, item.hashtags].filter((x) => x && x.trim()).join("\n\n");
   return {
     platform, mediaType: type, mediaUrl: file.url, mediaSha256: file.sha256,
+    // The exact bytes that were just verified against the manifest: a real
+    // publisher uploads these, never a fresh fetch of a mutable URL.
+    ...(verified ? { mediaBytes: verified.get(file.url) } : {}),
     text, disclosure: item.disclosure, aiGenerated: true,
     manifestHash: exportRecord.manifestHash,
   };
+}
+
+/**
+ * Exact bytes at the send boundary (12 Nov review, delivery-time contract):
+ * every file the export lists is re-read and its SHA-256 compared with the
+ * manifest. A changed, missing or unreadable file means nothing is sent
+ * (EXPORT_MEDIA_CHANGED). Returns url -> verified bytes for the payload.
+ * Test: db-send-time-media.
+ */
+export async function verifiedExportMedia(mediaStore, exportRecord) {
+  if (!mediaStore?.configured) {
+    throw new ApiError("MEDIA_STORE_NOT_CONFIGURED", 409, "The export's media cannot be re-verified without media storage; nothing was sent");
+  }
+  const bytes = new Map();
+  const problems = [];
+  for (const f of exportRecord.manifest.media || []) {
+    const read = await mediaStore.read(f.url);
+    if (!read.ok) { problems.push({ url: f.url, problem: read.problem }); continue; }
+    const digest = crypto.createHash("sha256").update(read.bytes).digest("hex");
+    if (digest !== f.sha256) { problems.push({ url: f.url, problem: "the file changed since it was exported (checksum differs)" }); continue; }
+    bytes.set(f.url, read.bytes);
+  }
+  if (problems.length) {
+    throw new ApiError("EXPORT_MEDIA_CHANGED", 409, "The exported media is missing or has changed since export; nothing was sent. Export the approved version again.", { problems });
+  }
+  return bytes;
 }
 
 /** Applies a job's derived state to the job, the calendar entry and the item. */
@@ -91,7 +120,7 @@ async function assertRightsCurrent(prisma, item, exportRecord, at) {
   if (fingerprints.length) await publicationRights(prisma, item.characterId, fingerprints, at);
 }
 
-export async function publishContent(prisma, gate, contentId, { by, now = new Date(), clock = () => now, faults = null } = {}) {
+export async function publishContent(prisma, gate, contentId, { by, now = new Date(), clock = () => now, faults = null, mediaStore = null } = {}) {
   const fault = async (point) => { if (faults) await faults(point); };
   const { item } = await assertDeliverable(prisma, contentId);
   if (item.scheduledAt && new Date(item.scheduledAt) > now) {
@@ -102,8 +131,9 @@ export async function publishContent(prisma, gate, contentId, { by, now = new Da
   }
   const exportRecord = await prisma.exportManifest.findFirst({ where: { pipelineItemId: item.id, snapshotHash: item.approvedHash }, orderBy: { createdAt: "desc" } });
   if (!exportRecord) throw new ApiError("EXPORT_REQUIRED", 409, "Export the approved version first; its media must be verified before posting");
-  // Before anything is written or sent (no publisher call on expired rights).
+  // Before anything is written or sent: current rights and the exact bytes.
   await assertRightsCurrent(prisma, item, exportRecord, clock());
+  await verifiedExportMedia(mediaStore, exportRecord);
 
   // Every approved destination must pass the gate before anything is written.
   const destinations = destinationsOf(item);
@@ -161,6 +191,14 @@ export async function publishContent(prisma, gate, contentId, { by, now = new Da
         await setDelivery(d.id, { state: "failed", errorCode: "RIGHTS_INCOMPLETE" });
         continue;
       }
+      // The bytes again, right before this destination; a changed file is a
+      // definite "not sent" for this and later destinations.
+      let verified;
+      try { verified = await verifiedExportMedia(mediaStore, exportRecord); } catch (refusal) {
+        if (refusal?.code !== "EXPORT_MEDIA_CHANGED") throw refusal;
+        await setDelivery(d.id, { state: "failed", errorCode: "EXPORT_MEDIA_CHANGED" });
+        continue;
+      }
       const check = checks[destinations.indexOf(d.platform)];
       await fault("beforeSubmitMark");
       const attempt = d.attempt + 1;
@@ -168,7 +206,7 @@ export async function publishContent(prisma, gate, contentId, { by, now = new Da
       await setDelivery(d.id, { state: "submitting", attempt, clientRef, submittedAt: new Date(), errorCode: null, simulated: Boolean(check.simulated) });
       await fault("afterSubmitMark");
       try {
-        const result = await check.adapter.publish(buildPayload(item, exportRecord, d.platform), {
+        const result = await check.adapter.publish(buildPayload(item, exportRecord, d.platform, verified), {
           clientRef,
           onAccepted: async (remoteRequestId) => { await setDelivery(d.id, { remoteRequestId: String(remoteRequestId).slice(0, 200) }); await fault("afterAccept"); },
         });
