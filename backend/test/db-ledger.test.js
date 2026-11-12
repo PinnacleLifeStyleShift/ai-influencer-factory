@@ -29,8 +29,11 @@ test("caps hold across two independent clients (separate connection pools)", opt
 
 test("group reservation is all-or-nothing", opts, async () => {
   const l = createPrismaLedger(a);
-  await l.reserveGroup([entry(), entry(), entry()], CAPS); // 3 of 5
-  await assert.rejects(l.reserveGroup([entry(), entry(), entry()], CAPS), { code: "BUDGET_EXCEEDED" });
+  // A per-job cap that fits a 3-step workflow, so the DAILY cap is what refuses
+  // the second group (the per-job cap bounds the whole workflow since IF-R1).
+  const caps = { ...CAPS, perJobMicros: 3 * PRICE };
+  await l.reserveGroup([entry(), entry(), entry()], caps); // 3 of 5
+  await assert.rejects(l.reserveGroup([entry(), entry(), entry()], caps), (e) => e.code === "BUDGET_EXCEEDED" && /Daily/.test(e.message));
   assert.equal(await a.generationReservation.count(), 3, "no partial reservation");
 });
 

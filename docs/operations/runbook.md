@@ -77,9 +77,9 @@ Every migration after the baseline is additive, which is checked by a test. An o
 | Unexpected spending | Set `LIVE_PROVIDER_CALLS=disabled` (or unset it). Open **Generation Jobs**: "outcome unknown" steps are counted, not re-bought; check them with the provider and resolve them with evidence. |
 | A post may have gone out twice or not at all | Open the item's **Publishing** panel. "Outcome unknown" deliveries block re-posting until you check the platform or record what you saw. |
 | Something looks wrong with spending | **Operations** page, then **Pause new generation** (with a reason). New submissions stop at once, including a running workflow's next step; reconciliation continues. |
-| Jobs stuck after a crash | Restart, or use **Recover abandoned jobs** (Generation Jobs) and `POST /api/publishing/recover`. Nothing uncertain is retried automatically. |
+| Jobs stuck after a crash | **Automatic:** a recovery sweep runs at startup and every 2 minutes (`RECOVERY_SWEEP_MS`). It takes over only leases that have **expired**: generation leases last 20 minutes and publish leases 10, so after a quick restart it may take up to that long. Uncertain steps become "outcome unknown"; nothing uncertain is bought or posted again. To act sooner, use **Recover abandoned jobs** (Generation Jobs) and `POST /api/publishing/recover`. Obligations unresolved for more than an hour are logged as `[alert]` on every sweep: watch for that line. |
 | `/ready` returns `not_ready` | The database is unreachable or a migration did not apply. Read the deploy logs (`[migrate]` lines). The previous deployment keeps serving. |
-| A deploy hangs on shutdown | The server waits up to 25 s for in-flight requests, and Railway sends SIGKILL after 30 s. Anything cut off is reconciled by job recovery on the next start. |
+| A deploy hangs on shutdown | The server waits up to 25 s for in-flight requests, and Railway sends SIGKILL after 30 s. Anything cut off is picked up by the recovery sweep once its lease expires, not necessarily at the next start. |
 
 ## 5. Routine
 

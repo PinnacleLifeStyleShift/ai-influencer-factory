@@ -28,7 +28,7 @@ export function publishingRoutes() {
   }));
 
   router.post("/content/:contentId/publish", ["publish"], onlyFields([]), handle("POST /publishing/content/:contentId/publish", async (req, res) => {
-    const job = await publishContent(req.prisma, req.publishing.gate, req.params.contentId, { by: by(req), faults: req.publishing.faults, now: req.publishing.now() });
+    const job = await publishContent(req.prisma, req.publishing.gate, req.params.contentId, { by: by(req), faults: req.publishing.faults, now: req.publishing.now(), clock: req.publishing.now });
     res.json({ success: true, job });
   }));
 

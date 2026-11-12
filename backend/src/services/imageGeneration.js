@@ -12,6 +12,13 @@
  * API entitlement, pricing and commercial-use terms are UNVERIFIED.
  */
 import { ProviderError } from "./generationGate.js";
+import { providerFetch, readJson, readText, deadlineIn, assertProviderUrl } from "./providerHttp.js";
+
+// Every provider call is bounded and never follows redirects (review IF-R7, IF-R6).
+const fetch = (url, init) => providerFetch(url, init);
+// Overall polling budget per step: below the 20-minute generation lease.
+const POLL_BUDGET_MS = Number(process.env.PROVIDER_POLL_BUDGET_MS) || 300000;
+
 
 /**
  * Builds a prompt string from character data for image generation.
@@ -88,11 +95,11 @@ async function generateWithLeonardo(prompt, options = {}, ctx = {}) {
   });
 
   if (!createRes.ok) {
-    const errText = await createRes.text().catch(() => "");
+    const errText = await readText(createRes).catch(() => "");
     throw new Error(`Leonardo API error (${createRes.status}): ${errText}`);
   }
 
-  const createData = await createRes.json();
+  const createData = await readJson(createRes);
   const generationId =
     createData?.sdGenerationJob?.generationId ||
     createData?.generationId;
@@ -107,9 +114,11 @@ async function generateWithLeonardo(prompt, options = {}, ctx = {}) {
 }
 
 async function pollLeonardo(generationId, apiKey, maxAttempts = 30) {
+  const until = deadlineIn(POLL_BUDGET_MS);
   const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
   for (let i = 0; i < maxAttempts; i++) {
+    if (Date.now() >= until.at) break;
     await delay(4000);
 
     const res = await fetch(
@@ -127,7 +136,7 @@ async function pollLeonardo(generationId, apiKey, maxAttempts = 30) {
       continue;
     }
 
-    const data = await res.json();
+    const data = await readJson(res);
     const status = data?.generations_by_pk?.status;
     console.log(`Leonardo poll ${i + 1}: status=${status}`);
 
@@ -187,7 +196,7 @@ async function generateWithHiggsfield(prompt, options = {}, ctx = {}) {
   });
 
   if (!response.ok) {
-    const errorText = await response.text().catch(() => "");
+    const errorText = await readText(response).catch(() => "");
     let errorDetail = errorText;
     try {
       const errorJson = JSON.parse(errorText);
@@ -196,7 +205,7 @@ async function generateWithHiggsfield(prompt, options = {}, ctx = {}) {
     throw new Error(`Higgsfield API error (${response.status}): ${errorDetail}`);
   }
 
-  const data = await response.json();
+  const data = await readJson(response);
   if (data?.job_set_id) {
     // Accepted: record the provider's id so an interrupted job can be reconciled.
     await ctx.onAccepted?.(data.job_set_id);
@@ -214,9 +223,11 @@ async function generateWithHiggsfield(prompt, options = {}, ctx = {}) {
 }
 
 async function pollHiggsfield(jobSetId, apiKey, secret, maxAttempts = 30) {
+  const until = deadlineIn(POLL_BUDGET_MS);
   const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
   for (let i = 0; i < maxAttempts; i++) {
+    if (Date.now() >= until.at) break;
     await delay(3000);
 
     const response = await fetch(`https://platform.higgsfield.ai/v1/job-sets/${jobSetId}`, {
@@ -232,7 +243,7 @@ async function pollHiggsfield(jobSetId, apiKey, secret, maxAttempts = 30) {
       continue;
     }
 
-    const data = await response.json();
+    const data = await readJson(response);
     console.log(`Higgsfield poll ${i + 1}: status=${data.status}`);
 
     if (data.status === "completed" || data.status === "done") {

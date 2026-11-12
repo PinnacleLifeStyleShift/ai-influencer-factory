@@ -69,14 +69,21 @@ function existingKeyOutcome(existing, entry) {
     { reservationId: existing.id, state: existing.state });
 }
 
-function assertCaps(entries, caps, daySpent, monthSpent) {
-  let total = 0;
-  for (const e of entries) {
-    if (e.amountMicros > caps.perJobMicros) {
-      throw new ApiError("BUDGET_EXCEEDED", 402, "Estimated job cost exceeds the per-job cap");
-    }
-    total += e.amountMicros;
+/**
+ * WHY the per-job cap is checked against the WHOLE workflow (review IF-R1):
+ * an operator's "maximum for one generation request" must bound the request,
+ * not each of its steps; per step, two $0.75 steps passed a $1.00 job cap.
+ * `workflow` is every step of the request (including steps replayed from an
+ * earlier attempt); `entries` are the ones newly reserved now, which count
+ * against the daily and monthly caps. Test: review-1112 IF-R1.
+ */
+function assertCaps(entries, caps, daySpent, monthSpent, workflow = entries) {
+  const jobTotal = workflow.reduce((t, e) => t + e.amountMicros, 0);
+  if (jobTotal > caps.perJobMicros) {
+    throw new ApiError("BUDGET_EXCEEDED", 402, "Estimated cost of this generation request exceeds the per-job cap");
   }
+  let total = 0;
+  for (const e of entries) total += e.amountMicros;
   if (daySpent + total > caps.dailyMicros) {
     throw new ApiError("BUDGET_EXCEEDED", 402, "Daily spending cap would be exceeded");
   }
@@ -95,7 +102,9 @@ export function createMemoryLedger({ durable = false, now = () => new Date() } =
     let t = 0;
     for (const r of rows.values()) {
       if (r.state === "released" || !pred(r)) continue;
-      t += r.state === "settled" ? r.actualMicros : r.amountMicros;
+      // A settled charge counts at its verified actual when known, else at the
+      // conservative estimate; "unknown" is never recorded as an actual (IF-R2).
+      t += r.state === "settled" && r.actualMicros !== null ? r.actualMicros : r.amountMicros;
     }
     return t;
   };
@@ -116,7 +125,7 @@ export function createMemoryLedger({ durable = false, now = () => new Date() } =
       }
       const at = now();
       const { day, month } = periodKeys(at, caps.timezone);
-      assertCaps(toReserve, caps, committed((r) => r.day === day), committed((r) => r.month === month));
+      assertCaps(toReserve, caps, committed((r) => r.day === day), committed((r) => r.month === month), entries);
       for (let i = 0; i < entries.length; i++) {
         if (out[i]) continue;
         const e = entries[i];
@@ -139,7 +148,7 @@ export function createMemoryLedger({ durable = false, now = () => new Date() } =
       // Settles once, and only an open reservation: recorded spend never moves back.
       if (!r || !SETTLEABLE.includes(r.state)) return;
       r.state = "settled";
-      r.actualMicros = Number.isInteger(actualMicros) ? actualMicros : r.amountMicros;
+      r.actualMicros = Number.isInteger(actualMicros) ? actualMicros : null;
       r.result = result;
     },
     async release(id) {
@@ -167,7 +176,7 @@ export function createMemoryLedger({ durable = false, now = () => new Date() } =
       assertActual(actualMicros);
       const r = rows.get(id);
       if (!r || !SETTLEABLE.includes(r.state)) throw new ApiError("NOT_RESOLVABLE", 409, "This reservation is not open or uncertain");
-      if (charged) { r.state = "settled"; r.actualMicros = Number.isInteger(actualMicros) ? actualMicros : r.amountMicros; r.result = result; }
+      if (charged) { r.state = "settled"; r.actualMicros = Number.isInteger(actualMicros) ? actualMicros : null; r.result = result; }
       else r.state = "released";
       return { ...r };
     },
@@ -224,7 +233,7 @@ export function createPrismaLedger(prisma, { now = () => new Date() } = {}) {
         }
         const at = now();
         const { day, month } = periodKeys(at, caps.timezone);
-        assertCaps(toReserve, caps, await sumWhere(tx, { day }), await sumWhere(tx, { month }));
+        assertCaps(toReserve, caps, await sumWhere(tx, { day }), await sumWhere(tx, { month }), entries);
 
         for (let i = 0; i < entries.length; i++) {
           if (out[i]) continue;
@@ -252,16 +261,17 @@ export function createPrismaLedger(prisma, { now = () => new Date() } = {}) {
         where: { id, state: { in: SETTLEABLE } },
         data: {
           state: "settled",
-          actualMicros: Number.isInteger(actualMicros) ? BigInt(actualMicros) : r.amountMicros,
+          actualMicros: Number.isInteger(actualMicros) ? BigInt(actualMicros) : null,
           result: result ?? undefined,
         },
       });
     },
-    async release(id) {
-      await prisma.generationReservation.updateMany({ where: { id, state: "reserved" }, data: { state: "released" } });
+    // `tx` lets recovery change money and the step in one transaction (IF-R4).
+    async release(id, { tx } = {}) {
+      await (tx || prisma).generationReservation.updateMany({ where: { id, state: "reserved" }, data: { state: "released" } });
     },
-    async markUnknown(id) {
-      await prisma.generationReservation.updateMany({ where: { id, state: "reserved" }, data: { state: "outcome_unknown" } });
+    async markUnknown(id, { tx } = {}) {
+      await (tx || prisma).generationReservation.updateMany({ where: { id, state: "reserved" }, data: { state: "outcome_unknown" } });
     },
     async get(id) {
       return rowOut(await prisma.generationReservation.findUnique({ where: { id } }));
@@ -281,7 +291,7 @@ export function createPrismaLedger(prisma, { now = () => new Date() } = {}) {
       const r = await db.generationReservation.findUnique({ where: { id } });
       if (!r) throw new ApiError("NOT_FOUND", 404, "Reservation not found");
       const data = charged
-        ? { state: "settled", actualMicros: Number.isInteger(actualMicros) ? BigInt(actualMicros) : r.amountMicros, result: result ?? undefined }
+        ? { state: "settled", actualMicros: Number.isInteger(actualMicros) ? BigInt(actualMicros) : null, result: result ?? undefined }
         : { state: "released" };
       const { count } = await db.generationReservation.updateMany({ where: { id, state: { in: SETTLEABLE } }, data });
       if (count !== 1) throw new ApiError("NOT_RESOLVABLE", 409, "This reservation is not open or uncertain");
