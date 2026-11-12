@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { publicationRights } from "./assetLineage.js";
 import { ApiError } from "../lib/errors.js";
 import { checkExternalUrl } from "../lib/urlSafety.js";
 import { destinationsOf, mediaTypeOf } from "../lib/revision.js";
@@ -79,7 +80,18 @@ export async function settleJob(prisma, jobId, { releaseLeaseOf } = {}) {
   return state;
 }
 
-export async function publishContent(prisma, gate, contentId, { by, now = new Date(), faults = null } = {}) {
+/**
+ * Rights at the irreversible send boundary (review IF-R5): a licence valid at
+ * export may have expired (or been revoked or narrowed) by the scheduled
+ * time, or between two destinations. The references recorded in the export's
+ * lineage are re-checked for publication NOW, before each submission.
+ */
+async function assertRightsCurrent(prisma, item, exportRecord, at) {
+  const fingerprints = (exportRecord.manifest?.rights || []).map((r) => r.referenceFingerprint);
+  if (fingerprints.length) await publicationRights(prisma, item.characterId, fingerprints, at);
+}
+
+export async function publishContent(prisma, gate, contentId, { by, now = new Date(), clock = () => now, faults = null } = {}) {
   const fault = async (point) => { if (faults) await faults(point); };
   const { item } = await assertDeliverable(prisma, contentId);
   if (item.scheduledAt && new Date(item.scheduledAt) > now) {
@@ -90,6 +102,8 @@ export async function publishContent(prisma, gate, contentId, { by, now = new Da
   }
   const exportRecord = await prisma.exportManifest.findFirst({ where: { pipelineItemId: item.id, snapshotHash: item.approvedHash }, orderBy: { createdAt: "desc" } });
   if (!exportRecord) throw new ApiError("EXPORT_REQUIRED", 409, "Export the approved version first; its media must be verified before posting");
+  // Before anything is written or sent (no publisher call on expired rights).
+  await assertRightsCurrent(prisma, item, exportRecord, clock());
 
   // Every approved destination must pass the gate before anything is written.
   const destinations = destinationsOf(item);
@@ -138,6 +152,14 @@ export async function publishContent(prisma, gate, contentId, { by, now = new Da
       try { await assertDeliverable(prisma, contentId); } catch (fence) {
         await prisma.publishDelivery.updateMany({ where: { jobId: job.id, state: { in: RETRYABLE } }, data: { state: "cancelled", errorCode: fence.code || "FENCED", revision: { increment: 1 } } });
         break;
+      }
+      // Rights again, right before this destination's irreversible send. A
+      // refusal is a definite "not sent": the delivery may be retried once the
+      // rights are renewed (state failed, never unknown).
+      try { await assertRightsCurrent(prisma, item, exportRecord, clock()); } catch (refusal) {
+        if (refusal?.code !== "RIGHTS_INCOMPLETE") throw refusal;
+        await setDelivery(d.id, { state: "failed", errorCode: "RIGHTS_INCOMPLETE" });
+        continue;
       }
       const check = checks[destinations.indexOf(d.platform)];
       await fault("beforeSubmitMark");

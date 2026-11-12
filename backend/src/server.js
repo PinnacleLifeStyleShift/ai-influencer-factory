@@ -15,16 +15,13 @@ const prisma = createPrismaClient();
 const PORT = parseInt(process.env.PORT) || 4000;
 const app = createApp({ prisma });
 
-// Jobs left running by a previous process: release what was provably never
-// sent, mark the rest for reconciliation. Never blocks startup.
-import("./services/generationJobs.js")
-  .then(({ recoverAbandoned }) => recoverAbandoned(prisma, app.locals.jobLedger))
-  .catch((e) => console.error("startup job recovery failed:", e?.message));
-// Publish jobs left running: a delivery that was being sent becomes "outcome
-// unknown" (never re-posted automatically).
-import("./services/publishing.js")
-  .then(({ recoverPublishJobs }) => recoverPublishJobs(prisma))
-  .catch((e) => console.error("startup publish recovery failed:", e?.message));
+// Recovery at startup and then periodically (expired leases only, fenced,
+// never re-buying or re-posting uncertain work): see services/recoverySweep.js.
+const { startRecoverySweep, recoveryPass } = await import("./services/recoverySweep.js");
+const sweep = startRecoverySweep({
+  run: () => recoveryPass(prisma, app.locals.jobLedger),
+  intervalMs: Number(process.env.RECOVERY_SWEEP_MS) || undefined,
+});
 
 // Housekeeping: sessions expired or revoked more than 30 days ago are deleted
 // once a day (the audit trail keeps the events; nothing else is pruned).
@@ -47,6 +44,7 @@ let stopping = false;
 function shutdown(signal) {
   if (stopping) return;
   stopping = true;
+  sweep.stop();
   console.log(`[shutdown] ${signal}: closing; waiting up to ${GRACE_MS / 1000}s for in-flight requests`);
   const force = setTimeout(() => { console.warn("[shutdown] grace period over; exiting with requests still open"); process.exit(1); }, GRACE_MS);
   force.unref();

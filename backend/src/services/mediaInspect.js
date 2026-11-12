@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import zlib from "zlib";
 
 /**
  * Structural media checks, done on the bytes (never trusting a file name or a
@@ -25,27 +26,64 @@ export function sniffMime(buf) {
   return null;
 }
 
+/** Images larger than this are refused before anything decodes them (IF-R3). */
+export const MAX_IMAGE_PIXELS = 50_000_000;
+
+/**
+ * PNG structure (review IF-R3): every chunk is walked, its length must fit
+ * the file and its CRC must match; IHDR must come first, at least one IDAT
+ * must carry image data, and IEND must end the file. A header-shaped file
+ * with no image data is not an image.
+ */
 function pngInfo(buf) {
   if (buf.length < 33 || buf.toString("latin1", 12, 16) !== "IHDR") return { problems: ["PNG header is incomplete"] };
   const width = buf.readUInt32BE(16); const height = buf.readUInt32BE(20);
   const problems = [];
-  if (buf.toString("latin1", buf.length - 8, buf.length - 4) !== "IEND") problems.push("PNG is truncated (no end marker)");
+  let i = 8; let idatBytes = 0; let ended = false; let first = true;
+  while (i < buf.length) {
+    if (i + 12 > buf.length) { problems.push("PNG is truncated (incomplete chunk)"); break; }
+    const len = buf.readUInt32BE(i);
+    const type = buf.toString("latin1", i + 4, i + 8);
+    if (len > buf.length - i - 12) { problems.push(`PNG chunk ${type} is truncated`); break; }
+    const crc = buf.readUInt32BE(i + 8 + len);
+    if (zlib.crc32(buf.subarray(i + 4, i + 8 + len)) !== crc) { problems.push(`PNG chunk ${type} has an invalid checksum`); break; }
+    if (first && type !== "IHDR") { problems.push("PNG does not start with IHDR"); break; }
+    first = false;
+    if (type === "IDAT") idatBytes += len;
+    i += 12 + len;
+    if (type === "IEND") { ended = true; break; }
+  }
+  if (!problems.length) {
+    if (!ended) problems.push("PNG is truncated (no end marker)");
+    else if (i !== buf.length) problems.push("PNG has data after its end marker");
+    if (!idatBytes) problems.push("PNG has no image data");
+  }
+  if (!width || !height) problems.push("PNG has zero dimensions");
+  else if (width * height > MAX_IMAGE_PIXELS) problems.push(`image is larger than ${MAX_IMAGE_PIXELS} pixels`);
   return { width, height, problems };
 }
 
+/** JPEG structure: a frame header, scan data and the end marker (IF-R3). */
 function jpegInfo(buf) {
-  let i = 2;
-  while (i + 9 < buf.length) {
+  let i = 2; let frame = null;
+  while (i + 4 <= buf.length) {
     if (buf[i] !== 0xff) return { problems: ["JPEG structure is invalid"] };
     const marker = buf[i + 1];
+    if (marker === 0xd9) break;
     const len = buf.readUInt16BE(i + 2);
-    if ([0xc0, 0xc1, 0xc2].includes(marker)) {
-      const problems = buf[buf.length - 2] === 0xff && buf[buf.length - 1] === 0xd9 ? [] : ["JPEG is truncated (no end marker)"];
-      return { height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7), problems };
+    if (len < 2 || i + 2 + len > buf.length) return { problems: ["JPEG is truncated"] };
+    if ([0xc0, 0xc1, 0xc2].includes(marker) && i + 9 <= buf.length) frame = { height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) };
+    if (marker === 0xda) {
+      if (!frame) return { problems: ["JPEG has no frame header"] };
+      const problems = [];
+      if (i + 2 + len >= buf.length - 2) problems.push("JPEG has no scan data");
+      if (!(buf[buf.length - 2] === 0xff && buf[buf.length - 1] === 0xd9)) problems.push("JPEG is truncated (no end marker)");
+      if (frame.width * frame.height > MAX_IMAGE_PIXELS) problems.push(`image is larger than ${MAX_IMAGE_PIXELS} pixels`);
+      return { ...frame, problems };
     }
     i += 2 + len;
   }
-  return { problems: ["JPEG has no frame header"] };
+  return frame ? { ...frame, problems: ["JPEG has no scan data"] } : { problems: ["JPEG has no frame header"] };
 }
 
 const CONTAINERS = new Set(["moov", "trak", "mdia", "minf", "stbl", "edts", "dinf"]);

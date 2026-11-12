@@ -80,38 +80,64 @@ function journalFor(prisma, jobId, leaseOwner) {
  * to a dead worker. Takes them over (fencing the dead worker out) and settles
  * each step's money by what the journal proves.
  */
+export const RECOVERY_LEASE_MS = 5 * 60_000;
+
+/**
+ * WHY recovery holds a real lease and fences every write (review IF-R4): a
+ * takeover that only renamed the owner left the expired time in place, so a
+ * second recovery pass could "take over" again and process the same steps.
+ * Now the takeover sets a fresh lease; each step's money and state change in
+ * ONE transaction that first locks the job row and proceeds only while this
+ * recoverer still owns it; the final job update is fenced the same way. A
+ * recoverer that lost the job writes nothing more. Uncertain steps are never
+ * re-bought: they become outcome_unknown with their money retained.
+ * Tests: db-review-1112 (IF-R4), db-jobs.
+ */
 export async function recoverAbandoned(prisma, ledger, { now = new Date(), log = console } = {}) {
   const stale = await prisma.generationJob.findMany({ where: { state: { in: OPEN_JOB }, leaseExpiresAt: { lt: now } }, include: { steps: true } });
   const summary = [];
   for (const job of stale) {
     const recoverer = `recovery:${newLeaseOwner()}`;
-    // Take over atomically; a worker that is somehow still alive is fenced out.
+    // Take over atomically with a fresh lease; a worker still alive is fenced out.
     const { count } = await prisma.generationJob.updateMany({
       where: { id: job.id, leaseOwner: job.leaseOwner, leaseExpiresAt: { lt: now } },
-      data: { leaseOwner: recoverer },
+      data: { leaseOwner: recoverer, leaseExpiresAt: new Date(Date.now() + RECOVERY_LEASE_MS) },
     });
     if (count !== 1) continue;
     const outcome = { jobId: job.id, released: 0, unknown: 0 };
-    for (const step of job.steps.sort((a, b) => a.index - b.index)) {
+    let lost = false;
+    for (const step of job.steps.sort((x, y) => x.index - y.index)) {
       const reservation = step.reservationId ? await ledger.get(step.reservationId) : await ledger.findByKey(step.idempotencyKey);
-      if (["pending", "reserved"].includes(step.state)) {
-        // Never marked as submitting: provably never sent.
-        if (reservation?.state === "reserved") await ledger.release(reservation.id);
-        await prisma.generationStep.update({ where: { id: step.id }, data: { state: "not_submitted", reservationId: reservation?.id || step.reservationId, errorCode: "PROCESS_DIED_BEFORE_SUBMIT", revision: { increment: 1 } } });
-        outcome.released++;
-      } else if (["submitting", "accepted"].includes(step.state)) {
-        // May have reached the provider: keep the money, block re-purchase.
-        if (reservation?.state === "reserved") await ledger.markUnknown(reservation.id);
-        await prisma.generationStep.update({ where: { id: step.id }, data: { state: "outcome_unknown", errorCode: "PROCESS_DIED_AFTER_SUBMIT", revision: { increment: 1 } } });
-        outcome.unknown++;
-      }
+      const kind = ["pending", "reserved"].includes(step.state) ? "release" : ["submitting", "accepted"].includes(step.state) ? "unknown" : null;
+      if (!kind) continue;
+      const applied = await prisma.$transaction(async (tx) => {
+        const [owned] = await tx.$queryRaw`SELECT id FROM generation_jobs WHERE id = ${job.id} AND lease_owner = ${recoverer} FOR UPDATE`;
+        if (!owned) return false;
+        const { count: changed } = await tx.generationStep.updateMany({
+          where: { id: step.id, revision: step.revision },
+          data: kind === "release"
+            // Never marked as submitting: provably never sent.
+            ? { state: "not_submitted", reservationId: reservation?.id || step.reservationId, errorCode: "PROCESS_DIED_BEFORE_SUBMIT", revision: { increment: 1 } }
+            // May have reached the provider: keep the money, block re-purchase.
+            : { state: "outcome_unknown", errorCode: "PROCESS_DIED_AFTER_SUBMIT", revision: { increment: 1 } },
+        });
+        if (changed !== 1) return true; // someone changed this step; leave it
+        if (reservation?.state === "reserved") {
+          if (kind === "release") await ledger.release(reservation.id, { tx });
+          else await ledger.markUnknown(reservation.id, { tx });
+        }
+        if (kind === "release") outcome.released++; else outcome.unknown++;
+        return true;
+      });
+      if (!applied) { lost = true; break; }
     }
+    if (lost) { log.info?.(`[jobs] recovery of ${job.id} lost its lease; stopped without further writes`); continue; }
     const steps = await prisma.generationStep.findMany({ where: { jobId: job.id } });
-    await prisma.generationJob.update({
-      where: { id: job.id },
+    const { count: closed } = await prisma.generationJob.updateMany({
+      where: { id: job.id, leaseOwner: recoverer },
       data: { state: deriveJobState(steps), leaseOwner: null, leaseExpiresAt: null, errorCode: "PROCESS_DIED", finishedAt: new Date() },
     });
-    summary.push(outcome);
+    if (closed === 1) summary.push(outcome);
   }
   if (summary.length) log.info?.(`[jobs] recovered ${summary.length} abandoned job(s)`);
   return summary;

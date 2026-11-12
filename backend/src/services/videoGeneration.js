@@ -10,6 +10,13 @@
 
 import crypto from "crypto";
 import { ProviderError } from "./generationGate.js";
+import { providerFetch, readJson, readText, deadlineIn, assertProviderUrl } from "./providerHttp.js";
+
+// Every provider call is bounded and never follows redirects (review IF-R7, IF-R6).
+const fetch = (url, init) => providerFetch(url, init);
+// Overall polling budget per step: below the 20-minute generation lease.
+const POLL_BUDGET_MS = Number(process.env.PROVIDER_POLL_BUDGET_MS) || 900000;
+
 
 // ---------------------------------------------------------------------------
 // fal.ai (Primary) — Kling image-to-video via fal queue API
@@ -41,11 +48,11 @@ async function generateWithFal(imageUrl, prompt, options = {}, ctx = {}) {
   });
 
   if (!submitRes.ok) {
-    const errText = await submitRes.text().catch(() => "");
+    const errText = await readText(submitRes).catch(() => "");
     throw new Error(`fal.ai submit error (${submitRes.status}): ${errText}`);
   }
 
-  const job = await submitRes.json();
+  const job = await readJson(submitRes);
   const requestId = job.request_id;
   if (!requestId) throw new Error("fal.ai did not return a request_id");
   // Accepted: record the provider's id so an interrupted job can be reconciled.
@@ -53,14 +60,21 @@ async function generateWithFal(imageUrl, prompt, options = {}, ctx = {}) {
 
   console.log("fal.ai job submitted:", requestId);
 
-  // Step 2: Poll for completion using URLs from submit response
-  return await pollFalJob(job.status_url, job.response_url, falKey);
+  // Step 2: poll the URLs from the submit response, but only if they are
+  // fal's own queue: the key is attached to them (review IF-R6). A bad URL
+  // after acceptance is an unknown outcome for the gate, never "not sent".
+  const FAL_QUEUE = { host: "queue.fal.run", pathPrefix: "/fal-ai/" };
+  const statusUrl = assertProviderUrl(job.status_url, FAL_QUEUE);
+  const responseUrl = assertProviderUrl(job.response_url, FAL_QUEUE);
+  return await pollFalJob(statusUrl, responseUrl, falKey);
 }
 
 async function pollFalJob(statusUrl, responseUrl, falKey, maxAttempts = 60) {
+  const until = deadlineIn(POLL_BUDGET_MS);
   const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
   for (let i = 0; i < maxAttempts; i++) {
+    if (Date.now() >= until.at) break;
     await delay(10000); // poll every 10s — videos take 3-6 min
 
     const res = await fetch(statusUrl, {
@@ -72,7 +86,7 @@ async function pollFalJob(statusUrl, responseUrl, falKey, maxAttempts = 60) {
       continue;
     }
 
-    const data = await res.json();
+    const data = await readJson(res);
     console.log(`fal.ai poll ${i + 1}: status=${data.status}`);
 
     if (data.status === "COMPLETED") {
@@ -83,7 +97,7 @@ async function pollFalJob(statusUrl, responseUrl, falKey, maxAttempts = 60) {
       if (!resultRes.ok) {
         throw new Error(`fal.ai result fetch failed (${resultRes.status})`);
       }
-      const result = await resultRes.json();
+      const result = await readJson(resultRes);
       const videoUrl = result?.video?.url;
       if (!videoUrl) throw new Error("fal.ai completed but no video URL found");
       return videoUrl;
@@ -160,11 +174,11 @@ async function generateWithKling(imageUrl, prompt, options = {}, ctx = {}) {
   });
 
   if (!res.ok) {
-    const errText = await res.text().catch(() => "");
+    const errText = await readText(res).catch(() => "");
     throw new Error(`Kling API error (${res.status}): ${errText}`);
   }
 
-  const data = await res.json();
+  const data = await readJson(res);
   const taskId = data?.data?.task_id;
   if (!taskId) throw new Error("Kling did not return a task_id");
   await ctx.onAccepted?.(taskId);
@@ -174,9 +188,11 @@ async function generateWithKling(imageUrl, prompt, options = {}, ctx = {}) {
 }
 
 async function pollKlingTask(taskId, token, maxAttempts = 60) {
+  const until = deadlineIn(POLL_BUDGET_MS);
   const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
   for (let i = 0; i < maxAttempts; i++) {
+    if (Date.now() >= until.at) break;
     await delay(10000);
 
     const res = await fetch(`${KLING_BASE}/v1/videos/image2video/${taskId}`, {
@@ -188,7 +204,7 @@ async function pollKlingTask(taskId, token, maxAttempts = 60) {
       continue;
     }
 
-    const data = await res.json();
+    const data = await readJson(res);
     const status = data?.data?.task_status;
     console.log(`Kling poll ${i + 1}: status=${status}`);
 
@@ -230,11 +246,11 @@ async function klingTextToVideo(prompt, options = {}) {
   });
 
   if (!res.ok) {
-    const errText = await res.text().catch(() => "");
+    const errText = await readText(res).catch(() => "");
     throw new Error(`Kling API error (${res.status}): ${errText}`);
   }
 
-  const data = await res.json();
+  const data = await readJson(res);
   const taskId = data?.data?.task_id;
   if (!taskId) throw new Error("Kling did not return a task_id");
 
