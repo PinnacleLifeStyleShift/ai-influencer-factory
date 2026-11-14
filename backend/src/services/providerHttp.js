@@ -33,17 +33,70 @@ function bounded(promise, ms, onTimeout) {
   });
 }
 
-/** fetch with a deadline and no redirects. Same arguments as fetch. */
-export async function providerFetch(url, init = {}, { deadline } = {}) {
+// Each response remembers the controller that can cancel its whole lifecycle.
+const lifecycle = new WeakMap();
+const maxBytes = () => Number(process.env.PROVIDER_MAX_RESPONSE_BYTES) || 5 * 1024 * 1024;
+
+/**
+ * fetch with a deadline and no redirects. Same arguments as fetch, plus an
+ * optional caller `signal`. ONE AbortController governs the connection, the
+ * headers and the body (review 14 Nov, P2): a timeout, a caller cancellation
+ * or an oversized body aborts the request and closes the socket, instead of
+ * only rejecting the caller while the read carries on in the background.
+ */
+export async function providerFetch(url, init = {}, { deadline, signal } = {}) {
   const ms = budget(deadline);
   if (ms <= 0) throw timeoutError(0);
   const controller = new AbortController();
-  return bounded(globalThis.fetch(url, { ...init, redirect: "error", signal: controller.signal }), ms, () => controller.abort());
+  if (signal) {
+    if (signal.aborted) controller.abort(signal.reason);
+    else signal.addEventListener("abort", () => controller.abort(signal.reason), { once: true });
+  }
+  const res = await bounded(globalThis.fetch(url, { ...init, redirect: "error", signal: controller.signal }), ms, () => controller.abort());
+  lifecycle.set(res, { controller, deadline, signal });
+  return res;
 }
 
-/** Body reads are bounded too: a stalled stream is a timeout, not a hang. */
-export const readJson = (res, { deadline } = {}) => bounded(res.json(), budget(deadline));
-export const readText = (res, { deadline } = {}) => bounded(res.text(), budget(deadline));
+/**
+ * Reads the body as a stream, bounded in time and size. On timeout, caller
+ * cancellation or too many bytes, the read is cancelled and the request
+ * aborted, so nothing keeps reading or allocating after the caller gave up.
+ * A timeout here does not mean the provider did no work: callers keep the
+ * reservation and the provider reference for reconciliation (never refund).
+ */
+async function readBody(res, { deadline } = {}) {
+  const life = lifecycle.get(res) || {};
+  const controller = life.controller;
+  const limit = maxBytes();
+  const declared = Number(res.headers?.get?.("content-length"));
+  const stop = (reader) => { try { reader?.cancel().catch(() => {}); } catch { /* already closed */ } controller?.abort(); };
+  if (Number.isFinite(declared) && declared > limit) { stop(null); throw tooLarge(limit); }
+  if (!res.body?.getReader) return Buffer.from(await bounded(res.arrayBuffer(), budget(deadline ?? life.deadline), () => controller?.abort()));
+  const reader = res.body.getReader();
+  const chunks = []; let size = 0;
+  const work = (async () => {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return Buffer.concat(chunks, size);
+      size += value.byteLength;
+      if (size > limit) { stop(reader); throw tooLarge(limit); }
+      chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+    }
+  })();
+  const cancelled = life.signal ? new Promise((_, reject) => {
+    const onAbort = () => { stop(reader); const e = new Error("provider request cancelled by the caller"); e.code = "PROVIDER_CANCELLED"; reject(e); };
+    if (life.signal.aborted) onAbort(); else life.signal.addEventListener("abort", onAbort, { once: true });
+  }) : null;
+  return bounded(cancelled ? Promise.race([work, cancelled]) : work, budget(deadline ?? life.deadline), () => stop(reader));
+}
+function tooLarge(limit) {
+  const e = new Error(`provider response is larger than ${limit} bytes; the read was stopped`);
+  e.code = "PROVIDER_RESPONSE_TOO_LARGE";
+  return e;
+}
+
+export const readText = async (res, opts) => (await readBody(res, opts)).toString("utf8");
+export const readJson = async (res, opts) => JSON.parse(await readText(res, opts));
 
 /**
  * A URL a provider returned must be that provider's own https origin (exact
