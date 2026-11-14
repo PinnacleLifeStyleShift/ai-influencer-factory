@@ -23,6 +23,8 @@ test("by default every live capability is off, and the map says what each would 
   }
   assert.match(m.publishing.built, /simulation/i, "publishing is honest about being simulation-only");
   assert.match(m.mediaStorage.built, /no object storage/i);
+  assert.equal(m.multiWorkspace.enabled, false, "multi-tenancy is stated as not offered");
+  assert.match(m.multiWorkspace.built, /not an isolation boundary/);
 });
 
 test("switched on is not configured: live calls without approved prices stay unconfigured", () => {

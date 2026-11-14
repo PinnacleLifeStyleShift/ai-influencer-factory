@@ -188,7 +188,7 @@ function Capabilities() {
               <tr key={c.key} className="align-top border-t border-[#2a2a3a]">
                 <td className="pr-2">{c.label}</td>
                 <td className="pr-2">{c.built}</td>
-                <td className="pr-2">{yes(c.configured, "yes", `missing ${c.missing.join(", ")}`)}</td>
+                <td className="pr-2">{c.missing.length || c.configured ? yes(c.configured, "yes", `missing ${c.missing.join(", ")}`) : <span className="text-zinc-400">not applicable</span>}</td>
                 <td className="pr-2">{yes(c.enabled, "on", "off")}</td>
                 <td className="pr-2">{c.verifiedBy}</td>
                 <td>{c.needs}</td>

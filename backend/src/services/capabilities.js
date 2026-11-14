@@ -60,6 +60,12 @@ export function capabilityMap(env = process.env) {
       verifiedBy: "db-role-invites, db-invite-revocation-race, e2e ui-auth and role-journey.",
       needs: "Owner decision to issue credentials (checklist D).",
     }),
+    // Not a setting: the supported tenancy model, stated so the workspace field
+    // is never read as an isolation boundary (review 14 Nov, isolation).
+    { key: "multiWorkspace", label: "Multiple isolated workspaces", enabled: false, configured: false, missing: [],
+      built: "No. One private workspace. Sessions carry a workspace id, but queries are not scoped by it; it is not an isolation boundary.",
+      verifiedBy: "Not applicable: not offered. Single-workspace role and route checks: auth-route-matrix, db-role-journey.",
+      needs: "An ownership model and a route-by-route two-workspace isolation test matrix before any multi-tenant use." },
     cap("retention", "Deleting data after a retention period", {
       built: "Policy parser; unset means nothing is deleted.",
       required: ["RETENTION_POLICY"],
